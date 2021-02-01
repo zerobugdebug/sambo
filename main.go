@@ -162,24 +162,27 @@ func calcDistance(latitude1, longitude1, latitude2, longitude2 float64) float32 
 func calculateWorkersFitness(task scheduledTask, trade string, workers []scheduledWorker) {
 	for _, v := range workers {
 
+		//Smaller wait time => higher number => better fit
 		valueDelay := v.canStartIn
 		if valueDelay == 0 {
 			valueDelay = maxValueDelay
 		} else {
 			valueDelay = 1 / valueDelay
-		} //smaller wait time => higher number => better fit
+		}
 
-		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID] //more hours in project => higher number => better fit
+		//More hours in project => higher number => better fit
+		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID]
 
+		//Shorter distance => higher number => better fit
 		valueDistance := calcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 		if valueDistance == 0 {
 			valueDistance = maxValueDistance
 		} else {
 			valueDistance = 1 / valueDistance
-		} //shorter distance => higher number => better fit
+		}
 
-		valueTrades := float32(0) //fewer trades => higher number => better fit
-
+		//Fewer trades => higher number => better fit
+		valueTrades := float32(0)
 		trades := workersDB[v.workerID].trades
 		for _, v := range trades {
 			if v == trade {
@@ -192,25 +195,27 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 		v.valueProjectFamiliarity = valueProjectFamiliarity
 		v.valueTrades = valueTrades
 		v.valueDelay = valueDelay
-		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + valueTrades*weightTrades //higher number => better fit
+		//Calculate AHP fitness for the worker, higher number => better fit
+		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + valueTrades*weightTrades
 	}
 
 }
 
-func assignBestWorker(task scheduledTask, workers []scheduledWorker) scheduledTask {
+func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledTask, bool) {
 
-	//sort workers in the best fit order
+	var workerAssigned = bool(false)
+	//Sort workers in the best fit order
 	sort.Slice(workers, func(i, j int) bool {
 		return workers[i].fitness > workers[j].fitness
 	})
 	for i, v := range workers {
-		//assign only if worker has required trade
+		//Assign only if worker has required trade
 		if v.valueTrades != 0 {
 			task.assignees = append(task.assignees, workers[i].workerID)
 			//TODO: Replace with proper calculation and GMaps API
 			task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance
 
-			//keep stop time intact for the multiple trades with different availability
+			//Keep stop time intact for the multiple trades with different availability
 			if task.stopTime-task.startTime < tasksDB[task.taskID].duration {
 				task.stopTime = task.startTime + tasksDB[task.taskID].duration
 			}
@@ -220,22 +225,30 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) scheduledTa
 			//Change worker's location
 			workers[i].latitude = projectsDB[task.taskID].latitude
 			workers[i].longitude = projectsDB[task.taskID].longitude
+			//Assign success flag to prevent loops on the calling function
+			workerAssigned = true
 			//Worker assigned, ignore other workers
 			break
 		}
 	}
-	return task
+	return task, workerAssigned
 }
 
+//Apply crossovers and mutations on non-elite individuals
 func transmogrifyPopulation() {
 	elitesNum := int(elitismRate * float32(len(population)))
 	for i := range population[elitesNum:] {
-		if rand.Float32() < crossoverRate { //let's do crossover
+		//Do crossover for some indviduals
+		if rand.Float32() < crossoverRate {
 			i1 := elitesNum + i
-			i2 := i1 + rand.Intn(len(population)-i1) //randomly selected from all individuals after the current one
+			//Randomly select second parent from all individuals after the current one
+			i2 := i1 + rand.Intn(len(population)-i1)
+			//TODO: Slice will be modified in place, need to check
 			population[i1], population[i2] = crossoverIndividuals(population[i1], population[i2])
 		}
-		if rand.Float32() < mutationRate { //let's do mutation
+		//Do mutation for some indviduals
+		if rand.Float32() < mutationRate {
+			//TODO: Slice will be modified in place, need to check
 			population[elitesNum+i] = mutateIndividual(population[elitesNum+i])
 		}
 	}
@@ -254,6 +267,7 @@ func calculateIndividualFitness() {
 }
 
 func sortPopulation(population []individual) {
+	//Sort indviduals in the order of fitness
 	sort.Slice(population, func(i, j int) bool {
 		return population[i].fitness < population[j].fitness
 	})
@@ -261,15 +275,25 @@ func sortPopulation(population []individual) {
 
 func generatePopulationSchedules(population []individual) {
 	for i := range population {
+		//TODO: Slice will be modified in place, need to check
 		population[i] = generateIndividualSchedule(population[i])
 	}
 }
 
 func generateIndividualSchedule(individual individual) individual {
-	for i, task := range individual.tasks {
-		for _, trade := range tasksDB[task.taskID].trades {
-			calculateWorkersFitness(task, trade, individual.workers)
-			individual.tasks[i] = assignBestWorker(task, individual.workers)
+
+	var workerAssigned bool
+	//Infinite loop until no workers can be assigned
+	for condition := true; condition; condition = workerAssigned {
+		for i, task := range individual.tasks {
+			for _, trade := range tasksDB[task.taskID].trades {
+				//Calculate fitness of all workers for specific task and trade
+				//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
+				calculateWorkersFitness(task, trade, individual.workers)
+				//Try to assign worker to task and update worker data
+				//TODO: Multiple bool assignments. Any way to make it better?
+				individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
+			}
 		}
 	}
 	return individual

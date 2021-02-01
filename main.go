@@ -10,11 +10,11 @@ import (
 
 //Genetic algorithm parameters
 const (
-	populationSize   int     = 5
-	generationsLimit int     = 100
-	crossoverRate    float32 = 1
-	elitismRate      float32 = 0.05
-	mutationRate     float32 = 0.25
+	populationSize   int     = 5    //size of the population
+	generationsLimit int     = 100  //how many generations to generate
+	crossoverRate    float32 = 1    //how often to do crossover 0%-100% in decimal
+	mutationRate     float32 = 0.25 //how often to do mutation 0%-100% in decimal
+	elitismRate      float32 = 0.05 //how many of the best indviduals to keep intact
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -31,8 +31,6 @@ const (
 const (
 	drivingSpeed float32 = 10 //Cheap alternative to GMaps API
 )
-
-var allowedTrades = [...]string{"Painter", "Lead", "Helper"}
 
 type worker struct {
 	name      string
@@ -65,18 +63,19 @@ type individual struct {
 	fitness float32
 }
 type task struct {
-	name         string
-	trades       []string
-	project      string
-	dependencies []string
-	duration     float32
+	name          string
+	trades        []string
+	project       string
+	prerequisites map[string]struct{} //unique array to prevent duplication of the prerequisites
+	duration      float32
 }
 
 type scheduledTask struct {
-	taskID    string
-	startTime float32
-	stopTime  float32
-	assignees []string
+	taskID           string
+	startTime        float32
+	stopTime         float32
+	assignees        []string
+	numPrerequisites int
 }
 
 var tasksDB map[string]task                            //key is the task ID
@@ -120,10 +119,11 @@ func generateIndividual() individual {
 	taskOrder := rand.Perm(len(tasksDB))
 	newIndividual.tasks = make([]scheduledTask, len(tasksDB))
 	i := 0
-	for k := range tasksDB {
+	for k, v := range tasksDB {
 		newIndividual.tasks[taskOrder[i]].taskID = k
 		newIndividual.tasks[taskOrder[i]].startTime = 0
 		newIndividual.tasks[taskOrder[i]].assignees = make([]string, 0)
+		newIndividual.tasks[taskOrder[i]].numPrerequisites = len(v.prerequisites)
 		i++
 	}
 
@@ -141,7 +141,7 @@ func generatePopulation() []individual {
 
 //Calculate haversine distance between 2 points
 func calcDistance(latitude1, longitude1, latitude2, longitude2 float64) float32 {
-	const earthRadius = 6371 //Earth radius in km
+	const earthRadius float64 = 6371 //Earth radius in km
 	latitude1Radian := float64(math.Pi * latitude1 / 180)
 	latitude2Radian := float64(math.Pi * latitude2 / 180)
 
@@ -203,8 +203,8 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 
 func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledTask, bool) {
 
-	var workerAssigned = bool(false)
-	//Sort workers in the best fit order
+	var workerAssigned bool = false
+	//Sort workers in the best fit (descending) order - from largest to smallest
 	sort.Slice(workers, func(i, j int) bool {
 		return workers[i].fitness > workers[j].fitness
 	})
@@ -225,6 +225,7 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 			//Change worker's location
 			workers[i].latitude = projectsDB[task.taskID].latitude
 			workers[i].longitude = projectsDB[task.taskID].longitude
+
 			//Assign success flag to prevent loops on the calling function
 			workerAssigned = true
 			//Worker assigned, ignore other workers
@@ -262,40 +263,73 @@ func crossoverIndividuals(individual1, individual2 individual) (individual, indi
 	return individual1, individual2
 }
 
-func calculateIndividualFitness() {
-
+/* func calculateIndividualFitness(individual individual) individual {
+	return individual
 }
 
+func calculatePopulationFitness(population []individual) {
+	//TODO: Slice will be modified in place, need to check
+	for i := range population {
+		population[i] = calculateIndividualFitness(population[i])
+	}
+}
+*/
+
 func sortPopulation(population []individual) {
-	//Sort indviduals in the order of fitness
+	//Sort indviduals in the order of fitness (ascending) - from smallest to largest
 	sort.Slice(population, func(i, j int) bool {
 		return population[i].fitness < population[j].fitness
 	})
 }
 
 func generatePopulationSchedules(population []individual) {
+	//TODO: Slice will be modified in place, need to check
 	for i := range population {
-		//TODO: Slice will be modified in place, need to check
 		population[i] = generateIndividualSchedule(population[i])
 	}
 }
 
+//Generate individual schedule and calculate fitness
 func generateIndividualSchedule(individual individual) individual {
 
-	var workerAssigned bool
+	var workerAssigned bool = true
+	var maxStopTime float32
 	//Infinite loop until no workers can be assigned
 	for condition := true; condition; condition = workerAssigned {
+		//Loop across all tasks
 		for i, task := range individual.tasks {
-			for _, trade := range tasksDB[task.taskID].trades {
-				//Calculate fitness of all workers for specific task and trade
-				//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
-				calculateWorkersFitness(task, trade, individual.workers)
-				//Try to assign worker to task and update worker data
-				//TODO: Multiple bool assignments. Any way to make it better?
-				individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
+			//Process only tasks with remaining trades and with all the dependencies met
+			if len(task.assignees) < len(tasksDB[task.taskID].trades) && task.numPrerequisites == 0 {
+				for _, trade := range tasksDB[task.taskID].trades {
+
+					//Calculate fitness of all workers for specific task and trade
+					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
+					calculateWorkersFitness(task, trade, individual.workers)
+					//Try to assign worker to task and update worker data
+					//TODO: Multiple bool assignments. Any way to make it better?
+					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
+					if maxStopTime < individual.tasks[i].stopTime {
+						maxStopTime = individual.tasks[i].stopTime
+					}
+
+				}
+				//Remove this task from prerequisites for all other tasks if all trades are scheduled
+				if len(task.assignees) == len(tasksDB[task.taskID].trades) {
+					prerequisiteID := task.taskID
+					for _, task := range individual.tasks {
+						if task.numPrerequisites > 0 {
+							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteID]; ok {
+								task.numPrerequisites--
+							}
+						}
+					}
+				}
+
 			}
 		}
 	}
+	//Earlier stopTime => faster we finish all the tasks => better individual fitness
+	individual.fitness = maxStopTime
 	return individual
 
 }
@@ -304,13 +338,15 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	projectsDB = make(map[string]project)
-
 	tasksDB = readCSVs()
 	population = generatePopulation()
+
 	for i := 0; i < generationsLimit; i++ {
+		//Generate schedule and calculate fitness
 		generatePopulationSchedules(population)
-		calculateIndividualFitness()
+		//Sort population in the fitness order
 		sortPopulation(population)
+		//Mutate and crossover population
 		transmogrifyPopulation()
 	}
 }

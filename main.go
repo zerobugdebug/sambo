@@ -198,20 +198,29 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 }
 
 func assignBestWorker(task scheduledTask, workers []scheduledWorker) scheduledTask {
+
+	//sort workers in the best fit order
 	sort.Slice(workers, func(i, j int) bool {
 		return workers[i].fitness > workers[j].fitness
 	})
 	for i, v := range workers {
+		//assign only if worker has required trade
 		if v.valueTrades != 0 {
 			task.assignees = append(task.assignees, workers[i].workerID)
-			task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance //TODO: Replace with proper calculation and GMaps API
+			//TODO: Replace with proper calculation and GMaps API
+			task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance
 
-			if task.stopTime-task.startTime < tasksDB[task.taskID].duration { //keep stop time intact for the multiple trades with different availability
+			//keep stop time intact for the multiple trades with different availability
+			if task.stopTime-task.startTime < tasksDB[task.taskID].duration {
 				task.stopTime = task.startTime + tasksDB[task.taskID].duration
 			}
+			//Change worker's next start time
 			workers[i].canStartIn = task.startTime + tasksDB[task.taskID].duration
+
+			//Change worker's location
 			workers[i].latitude = projectsDB[task.taskID].latitude
 			workers[i].longitude = projectsDB[task.taskID].longitude
+			//Worker assigned, ignore other workers
 			break
 		}
 	}

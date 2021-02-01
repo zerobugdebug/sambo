@@ -15,6 +15,7 @@ const (
 	crossoverRate    float32 = 1    //how often to do crossover 0%-100% in decimal
 	mutationRate     float32 = 0.25 //how often to do mutation 0%-100% in decimal
 	elitismRate      float32 = 0.05 //how many of the best indviduals to keep intact
+	deadend          float32 = 8760 //365 days in hours, fitness for the dead end individual, e.g. impossible to assign workers to all the tasks
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -293,45 +294,57 @@ func generatePopulationSchedules(population []individual) {
 func generateIndividualSchedule(individual individual) individual {
 
 	var workerAssigned bool = true
-	var maxStopTime float32
+	var maxStopTime float32 = 0
 	//Infinite loop until no workers can be assigned
 	for condition := true; condition; condition = workerAssigned {
+		//Prevent loops if no tasks left to process
+		workerAssigned = false
 		//Loop across all tasks
 		for i, task := range individual.tasks {
 			//Process only tasks with remaining trades and with all the dependencies met
 			if len(task.assignees) < len(tasksDB[task.taskID].trades) && task.numPrerequisites == 0 {
 				for _, trade := range tasksDB[task.taskID].trades {
-
 					//Calculate fitness of all workers for specific task and trade
 					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
 					calculateWorkersFitness(task, trade, individual.workers)
 					//Try to assign worker to task and update worker data
 					//TODO: Multiple bool assignments. Any way to make it better?
 					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
-					if maxStopTime < individual.tasks[i].stopTime {
+					/* 					if maxStopTime < individual.tasks[i].stopTime {
 						maxStopTime = individual.tasks[i].stopTime
-					}
-
+					} */
 				}
 				//Remove this task from prerequisites for all other tasks if all trades are scheduled
 				if len(task.assignees) == len(tasksDB[task.taskID].trades) {
 					prerequisiteID := task.taskID
-					for _, task := range individual.tasks {
+					//Loop over all tasks
+					for i, task := range individual.tasks {
 						if task.numPrerequisites > 0 {
+							//Check if prerequisiteID exists in the prerequisites map in taskDB
 							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteID]; ok {
-								task.numPrerequisites--
+								individual.tasks[i].numPrerequisites--
 							}
 						}
 					}
 				}
-
 			}
 		}
 	}
-	//Earlier stopTime => faster we finish all the tasks => better individual fitness
-	individual.fitness = maxStopTime
-	return individual
 
+	//Calculate viability and fitness
+
+	for _, task := range individual.tasks {
+		//If we have tasks/trades with no workers assigned, the individual is a dead end
+		if len(task.assignees) != len(tasksDB[task.taskID].trades) {
+			individual.fitness = deadend
+			break
+		}
+		//Earlier stopTime => faster we finish all the tasks => better individual fitness
+		if individual.fitness < task.stopTime {
+			individual.fitness = task.stopTime
+		}
+	}
+	return individual
 }
 
 func main() {

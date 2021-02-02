@@ -1,11 +1,24 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
+	"strconv"
 	"time"
+)
+
+const (
+	workersDBFileName            string = "worker_info.csv"
+	tasksDBFileName              string = "task_info.csv"
+	projectsDBFileName           string = "project_info.csv"
+	projectFamiliarityDBFileName string = "worker_project_hours.csv"
+	workersTimeOffDBFileName     string = "worker_time_off.csv"
 )
 
 //Genetic algorithm parameters
@@ -20,8 +33,8 @@ const (
 
 //Worker best fit, weighted decision matrix (AHP)
 const (
-	weightDistance           float32 = 0.1
-	weightTrades             float32 = 1
+	weightDistance float32 = 0.1
+	//weightTrades             float32 = 1
 	weightDelay              float32 = 0.01
 	weightProjectFamiliarity float32 = 0.5
 	maxValueDistance         float32 = 100
@@ -35,7 +48,6 @@ const (
 
 type worker struct {
 	name      string
-	trades    []string
 	latitude  float64
 	longitude float64
 }
@@ -93,7 +105,29 @@ func (individual individual) print() {
 	fmt.Printf("%+v\n", individual)
 }
 
-func readProjectInfoCSV()        {}
+func readProjectInfoCSV() map[string]project {
+	var projectTemp project
+	projectsDB := make(map[string]project)
+	projectsDBFile, err := os.Open(projectsDBFileName)
+	if err != nil {
+		log.Fatalln("Couldn't open the projectsDBFileName file", err)
+	}
+	projectsData := csv.NewReader(projectsDBFile)
+	for {
+		projectData, err := projectsData.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		projectTemp.name = projectData[1]
+		projectTemp.latitude, err = strconv.ParseFloat(projectData[2], 64)
+		projectTemp.longitude, err = strconv.ParseFloat(projectData[3], 64)
+		projectsDB[projectData[0]] = projectTemp
+	}
+	return projectsDB
+}
 func readTaskInfoCSV()           {}
 func readWorkerInfoCSV()         {}
 func readWorkerProjectHoursCSV() {}
@@ -182,22 +216,22 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 			valueDistance = 1 / valueDistance
 		}
 
-		//Fewer trades => higher number => better fit
-		valueTrades := float32(0)
-		trades := workersDB[v.workerID].trades
-		for _, v := range trades {
-			if v == trade {
-				valueTrades = float32(1) / float32(len(trades))
-				break
-			}
-		}
-
+		/* 		//Fewer trades => higher number => better fit
+		   		valueTrades := float32(0)
+		   		trades := workersDB[v.workerID].trades
+		   		for _, v := range trades {
+		   			if v == trade {
+		   				valueTrades = float32(1) / float32(len(trades))
+		   				break
+		   			}
+		   		}
+		*/
 		v.valueDistance = valueDistance
 		v.valueProjectFamiliarity = valueProjectFamiliarity
-		v.valueTrades = valueTrades
+		//		v.valueTrades = valueTrades
 		v.valueDelay = valueDelay
 		//Calculate AHP fitness for the worker, higher number => better fit
-		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + valueTrades*weightTrades
+		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance // + valueTrades*weightTrades
 	}
 
 }
@@ -337,8 +371,10 @@ func generateIndividualSchedule(individual individual) individual {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	projectsDB = make(map[string]project)
-	tasksDB = readCSVs()
+	//projectsDB = make(map[string]project)
+	//tasksDB = readCSVs()
+	projectsDB = readProjectInfoCSV()
+	fmt.Println(projectsDB)
 	population = generatePopulation()
 
 	for i := 0; i < generationsLimit; i++ {

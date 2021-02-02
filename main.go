@@ -264,18 +264,6 @@ func crossoverIndividuals(individual1, individual2 individual) (individual, indi
 	return individual1, individual2
 }
 
-/* func calculateIndividualFitness(individual individual) individual {
-	return individual
-}
-
-func calculatePopulationFitness(population []individual) {
-	//TODO: Slice will be modified in place, need to check
-	for i := range population {
-		population[i] = calculateIndividualFitness(population[i])
-	}
-}
-*/
-
 func sortPopulation(population []individual) {
 	//Sort indviduals in the order of fitness (ascending) - from smallest to largest
 	sort.Slice(population, func(i, j int) bool {
@@ -294,7 +282,6 @@ func generatePopulationSchedules(population []individual) {
 func generateIndividualSchedule(individual individual) individual {
 
 	var workerAssigned bool = true
-	var maxStopTime float32 = 0
 	//Infinite loop until no workers can be assigned
 	for condition := true; condition; condition = workerAssigned {
 		//Prevent loops if no tasks left to process

@@ -29,28 +29,31 @@ const (
 	crossoverRate    float32 = 1    //how often to do crossover 0%-100% in decimal
 	mutationRate     float32 = 0.25 //how often to do mutation 0%-100% in decimal
 	elitismRate      float32 = 0.05 //how many of the best indviduals to keep intact
-	deadend          float32 = 8760 //365 days in hours, fitness for the dead end individual, e.g. impossible to assign workers to all the tasks
+	deadend          float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
 )
 
 //Worker best fit, weighted decision matrix (AHP)
 const (
 	weightDistance float32 = 0.1
-	//weightTrades             float32 = 1
+	//weightTrades             float32 = 1 //for the trades implementation
 	weightDelay              float32 = 0.01
 	weightProjectFamiliarity float32 = 0.5
+	weightDemand             float32 = 1
 	maxValueDistance         float32 = 100
 	maxValueDelay            float32 = 100
+	maxValueDemand           float32 = 1
 )
 
 //Additional constants
 const (
-	drivingSpeed float32 = 10 //Cheap alternative to GMaps API
+	drivingSpeed float32 = 10 //cheap alternative to GMaps API
 )
 
 type worker struct {
 	name      string
 	latitude  float64
 	longitude float64
+	demand    float32 //how many tasks could be assigned to worker
 }
 
 type scheduledWorker struct {
@@ -62,7 +65,8 @@ type scheduledWorker struct {
 	valueDelay              float32
 	valueDistance           float32
 	valueProjectFamiliarity float32
-	valueTrades             float32
+	// valueTrades             float32
+	valueDemand float32
 }
 
 type project struct {
@@ -78,7 +82,7 @@ type individual struct {
 }
 type task struct {
 	name             string
-	validWorkers     []string
+	validWorkers     map[string]struct{} //unique hash map of empty structs to store validWorkers IDs
 	project          string
 	prerequisites    map[string]float32 //store unique prerequisite and corresponding lag/lead hours
 	duration         float32
@@ -95,11 +99,12 @@ type scheduledTask struct {
 	numPrerequisites int
 }
 
+//Global variables to act as a in-memory reference DB
+//TODO: Replace with some external in memory storage, because global vars are BAD
 var tasksDB map[string]task                            //key is the task ID
 var workersDB map[string]worker                        //key is the worker ID
 var projectsDB map[string]project                      //key is the project ID
 var projectFamiliarityDB map[string]map[string]float32 //key1 is the project ID, key2 is the worker ID
-var population []individual
 
 func (task task) print() {
 	fmt.Printf("%+v\n", task)
@@ -159,7 +164,12 @@ func readTaskInfoCSV() map[string]task {
 		}
 		taskTemp.project = tasksRecord[0]
 		taskTemp.name = tasksRecord[2]
-		taskTemp.validWorkers = strings.Fields(tasksRecord[3])
+		taskTemp.validWorkers = make(map[string]struct{})
+		for _, v := range strings.Fields(tasksRecord[3]) {
+			taskTemp.validWorkers[v] = struct{}{}
+		}
+
+		strings.Fields(tasksRecord[3])
 		taskTemp.prerequisites = make(map[string]float32)
 		prerequisitesTemp := strings.Fields(tasksRecord[4])
 		lagHoursTemp := strings.Fields(tasksRecord[9])
@@ -245,6 +255,23 @@ func readWorkerProjectHoursCSV() map[string]map[string]float32 {
 
 func readWorkerTimeOffCSV() {}
 
+func calculateWorkersDemand() map[string]worker {
+	var workerTemp worker
+	for _, task := range tasksDB {
+		for validWorker := range task.validWorkers {
+			workerTemp = workersDB[validWorker]
+			workerTemp.demand++
+			workersDB[validWorker] = workerTemp
+		}
+	}
+	totalTasks := len(tasksDB)
+	for workerID, worker := range workersDB {
+		worker.demand = float32(worker.demand) / float32(totalTasks)
+		workersDB[workerID] = worker
+	}
+	return workersDB
+}
+
 //Generate individual by randomizing the taskDB
 func generateIndividual() individual {
 	var newIndividual individual
@@ -313,27 +340,78 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 			valueDistance = 1 / valueDistance
 		}
 
-		/* 		//Fewer trades => higher number => better fit
-		   		valueTrades := float32(0)
-		   		trades := workersDB[v.workerID].trades
-		   		for _, v := range trades {
-		   			if v == trade {
-		   				valueTrades = float32(1) / float32(len(trades))
-		   				break
-		   			}
-		   		}
+		//Fewer tasks can be done by worker => higher number => better fit
+		//TODO: Implement recalculation of demand based on the remaining unscheduled tasks
+		valueDemand := workersDB[v.workerID].demand
+		if valueDemand != 0 {
+			valueDemand = 1 / valueDemand
+		}
+
+		/*
+			//TRADES IMPLEMENTATION
+			 		//Fewer trades => higher number => better fit
+			   		valueTrades := float32(0)
+			   		trades := workersDB[v.workerID].trades
+			   		for _, v := range trades {
+			   			if v == trade {
+			   				valueTrades = float32(1) / float32(len(trades))
+			   				break
+			   			}
+			   		}
 		*/
 		v.valueDistance = valueDistance
 		v.valueProjectFamiliarity = valueProjectFamiliarity
-		//		v.valueTrades = valueTrades
+		v.valueDemand = valueDemand
 		v.valueDelay = valueDelay
+		//v.valueTrades = valueTrades //TRADES IMPLEMENTATION
+
 		//Calculate AHP fitness for the worker, higher number => better fit
-		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance // + valueTrades*weightTrades
+		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + weightDemand*valueDemand
+		// + valueTrades*weightTrades //TRADES IMPLEMENTATION
 	}
 
 }
 
+func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledTask, bool) {
+
+	var workerAssigned bool = false
+	//Sort workers in the best fit (descending) order - from largest to smallest
+	sort.Slice(workers, func(i, j int) bool {
+		return workers[i].fitness > workers[j].fitness
+	})
+	//Scan through the workers slice to find the first available worker
+	for i, worker := range workers {
+		//Assign only if worker can be assigned to this task
+		//Check if workerID exists in the validWorkers map in taskDB
+		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
+			task.assignees = append(task.assignees, worker.workerID)
+			//TODO: Replace with proper calculation and GMaps API
+			if task.startTime < workers[0].canStartIn+drivingSpeed/workers[i].valueDistance {
+				task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance
+			}
+
+			//Keep stop time intact for the multiple trades with different availability
+			if task.stopTime-task.startTime < tasksDB[task.taskID].duration {
+				task.stopTime = task.startTime + tasksDB[task.taskID].duration
+			}
+			//Change worker's next start time
+			workers[i].canStartIn = task.startTime + tasksDB[task.taskID].duration
+
+			//Change worker's location
+			workers[i].latitude = projectsDB[task.taskID].latitude
+			workers[i].longitude = projectsDB[task.taskID].longitude
+
+			//Assign success flag to prevent loops on the calling function
+			workerAssigned = true
+			//Worker assigned, ignore other workers
+			break
+		}
+	}
+	return task, workerAssigned
+}
+
 /*
+//TRADES IMPLEMENTATION
 //Calculate fitness for every worker for the current task WITH TRADES
 func calculateWorkersFitness(task scheduledTask, trade string, workers []scheduledWorker) {
 	for _, v := range workers {
@@ -379,6 +457,8 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 
 */
 
+/*
+//TRADES IMPLEMENTATION
 func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledTask, bool) {
 
 	var workerAssigned bool = false
@@ -412,9 +492,10 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 	}
 	return task, workerAssigned
 }
+*/
 
 //Apply crossovers and mutations on non-elite individuals
-func transmogrifyPopulation() {
+func transmogrifyPopulation(population []individual) {
 	elitesNum := int(elitismRate * float32(len(population)))
 	for i := range population[elitesNum:] {
 		//Do crossover for some indviduals
@@ -465,35 +546,47 @@ func generateIndividualSchedule(individual individual) individual {
 		//Loop across all tasks
 		for i, task := range individual.tasks {
 			//Process only tasks with remaining worker slots and with all the dependencies met
-			if len(task.assignees) < len(tasksDB[task.taskID].trades) && task.numPrerequisites == 0 {
-				for _, trade := range tasksDB[task.taskID].trades {
-					//Calculate fitness of all workers for specific task and trade
+			if len(task.assignees) < tasksDB[task.taskID].idealWorkerCount && task.numPrerequisites == 0 {
+				//Assign workers to the task until idealWorkerCount
+				for j := len(individual.tasks[i].assignees); j < tasksDB[task.taskID].idealWorkerCount; j++ {
+					//Calculate fitness of idealWorkerCount workers for specific task
 					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
-					calculateWorkersFitness(task, trade, individual.workers)
+					calculateWorkersFitness(task, individual.workers)
 					//Try to assign worker to task and update worker data
 					//TODO: Multiple bool assignments. Any way to make it better?
 					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
 				}
-				//Remove this task from prerequisites for all other tasks if all trades are scheduled
-				if len(task.assignees) == len(tasksDB[task.taskID].trades) {
-					prerequisiteID := task.taskID
+				//Modify dependant tasks if idealWorkerCount workers are scheduled
+				if len(individual.tasks[i].assignees) == tasksDB[task.taskID].idealWorkerCount {
+					prerequisiteTask := task
 					//Loop over all tasks
 					for i, task := range individual.tasks {
+
 						if task.numPrerequisites > 0 {
-							//Check if prerequisiteID exists in the prerequisites map in taskDB
-							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteID]; ok {
+							//Check if prerequisiteTask.taskID exists in the prerequisites map in tasksDB
+							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID]; ok {
+								//Remove this task from prerequisites for all other tasks
 								individual.tasks[i].numPrerequisites--
+								//Update task.startTime to match predecessor stop time and account for lag/lead hours
+								if individual.tasks[i].startTime < prerequisiteTask.stopTime+tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID] {
+									individual.tasks[i].startTime = prerequisiteTask.stopTime + tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID]
+								}
+
 							}
+
 						}
+
 					}
 				}
 			}
 		}
 	}
 
+	return individual
 }
 
 /*
+//TRADES IMPLEMENTATION
 //Generate individual schedule and calculate fitness WITH TRADES (future version)
 //func generateIndividualScheduleWithTrades(individual individual) individual {
 
@@ -549,22 +642,27 @@ func generateIndividualSchedule(individual individual) individual {
 */
 
 func main() {
+
+	var population []individual
+
 	rand.Seed(time.Now().UnixNano())
 
 	//projectsDB = make(map[string]project)
 	//projectsDB, projectFamiliarityDB, tasksDB, workersDB, workersTimeOffDB = readCSVs()
 
+	//Global DB vars can be accessed directly, but to follow the standard approach used as a func output
 	projectsDB = readProjectInfoCSV()
 	tasksDB = readTaskInfoCSV()
 	workersDB = readWorkerInfoCSV()
 	projectFamiliarityDB = readWorkerProjectHoursCSV()
 	readWorkerTimeOffCSV()
 
+	workersDB = calculateWorkersDemand() //not neeeded if trades would be implemented
 	//projectsDB = readProjectInfoCSV()
 	//fmt.Println(projectsDB)
 	//fmt.Println(tasksDB)
-	//fmt.Println(workersDB)
-	fmt.Println(projectFamiliarityDB)
+	fmt.Println(workersDB)
+	//fmt.Println(projectFamiliarityDB)
 	population = generatePopulation()
 
 	for i := 0; i < generationsLimit; i++ {
@@ -573,6 +671,6 @@ func main() {
 		//Sort population in the fitness order
 		sortPopulation(population)
 		//Mutate and crossover population
-		transmogrifyPopulation()
+		transmogrifyPopulation(population)
 	}
 }

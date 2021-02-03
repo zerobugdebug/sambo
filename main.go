@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -76,11 +77,14 @@ type individual struct {
 	fitness float32
 }
 type task struct {
-	name          string
-	trades        []string
-	project       string
-	prerequisites map[string]struct{} //unique array to prevent duplication of the prerequisites
-	duration      float32
+	name             string
+	validWorkers     []string
+	project          string
+	prerequisites    map[string]float32 //store unique prerequisite and corresponding lag/lead hours
+	duration         float32
+	idealWorkerCount int
+	minWorkerCount   int
+	maxWorkerCount   int
 }
 
 type scheduledTask struct {
@@ -110,43 +114,136 @@ func readProjectInfoCSV() map[string]project {
 	projectsDB := make(map[string]project)
 	projectsDBFile, err := os.Open(projectsDBFileName)
 	if err != nil {
-		log.Fatalln("Couldn't open the projectsDBFileName file", err)
+		log.Fatalln("Couldn't open the "+projectsDBFileName+" file\r\n", err)
 	}
 	projectsData := csv.NewReader(projectsDBFile)
+	_, err = projectsData.Read() //skip CSV header
 	for {
-		projectData, err := projectsData.Read()
+		projectsRecord, err := projectsData.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			log.Fatal(err)
 		}
-		projectTemp.name = projectData[1]
-		projectTemp.latitude, err = strconv.ParseFloat(projectData[2], 64)
-		projectTemp.longitude, err = strconv.ParseFloat(projectData[3], 64)
-		projectsDB[projectData[0]] = projectTemp
+		projectTemp.name = projectsRecord[1]
+		projectTemp.latitude, err = strconv.ParseFloat(projectsRecord[2], 64)
+		if err != nil {
+			log.Println("Couldn't parse project latitude value", err)
+		}
+		projectTemp.longitude, err = strconv.ParseFloat(projectsRecord[3], 64)
+		if err != nil {
+			log.Println("Couldn't parse project longitude value", err)
+		}
+		projectsDB[projectsRecord[0]] = projectTemp
 	}
 	return projectsDB
 }
-func readTaskInfoCSV()           {}
-func readWorkerInfoCSV()         {}
-func readWorkerProjectHoursCSV() {}
-func readWorkerTimeOffCSV()      {}
 
-func readCSVs() map[string]task {
-	//taskList := []task{{1, "abc", 0, 0, ""}, {2, "def", 0, 0, ""}, {3, "ghi", 0, 0, ""}}
-	//	taskList[0] = task{1, "abc", 0, 0, ""}
-	//	taskList[1] = task{2, "def", 0, 0, ""}
-	//	taskList[2] = task{3, "ghi", 0, 0, ""}
-	tasks := make(map[string]task)
-	readProjectInfoCSV()
-	readTaskInfoCSV()
-	readWorkerInfoCSV()
-	readWorkerProjectHoursCSV()
-	readWorkerTimeOffCSV()
-	return tasks
+func readTaskInfoCSV() map[string]task {
+	var taskTemp task
+	tasksDB := make(map[string]task)
+	tasksDBFile, err := os.Open(tasksDBFileName)
+	if err != nil {
+		log.Fatalln("Couldn't open the "+tasksDBFileName+" file\r\n", err)
+	}
+	tasksData := csv.NewReader(tasksDBFile)
+	_, err = tasksData.Read() //skip CSV header
+	for {
+		tasksRecord, err := tasksData.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		taskTemp.project = tasksRecord[0]
+		taskTemp.name = tasksRecord[2]
+		taskTemp.validWorkers = strings.Fields(tasksRecord[3])
+		taskTemp.prerequisites = make(map[string]float32)
+		prerequisitesTemp := strings.Fields(tasksRecord[4])
+		lagHoursTemp := strings.Fields(tasksRecord[9])
+		for i, v := range prerequisitesTemp {
+			lagHours, err := strconv.ParseFloat(lagHoursTemp[i], 32)
+			if err != nil {
+				log.Println("Couldn't parse Lag hours value", err)
+				log.Println("Original row: ", tasksRecord)
+			}
+			taskTemp.prerequisites[taskTemp.project+"."+v] = float32(lagHours)
+		}
+		tempDuration, err := strconv.ParseFloat(tasksRecord[8], 32)
+		if err != nil {
+			log.Println("Couldn't parse task duration value", err)
+			log.Println("Original row: ", tasksRecord)
+
+		}
+		taskTemp.duration = float32(tempDuration)
+		tasksDB[taskTemp.project+"."+tasksRecord[1]] = taskTemp
+	}
+	return tasksDB
+}
+
+func readWorkerInfoCSV() map[string]worker {
+	var workerTemp worker
+	workersDB := make(map[string]worker)
+	workersDBFile, err := os.Open(workersDBFileName)
+	if err != nil {
+		log.Fatalln("Couldn't open the "+workersDBFileName+" file\r\n", err)
+	}
+	workersData := csv.NewReader(workersDBFile)
+	_, err = workersData.Read() //skip CSV header
+	for {
+		workersRecord, err := workersData.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		workerTemp.name = workersRecord[0]
+		workerTemp.latitude, err = strconv.ParseFloat(workersRecord[2], 64)
+		if err != nil {
+			log.Println("Couldn't parse project latitude value", err)
+		}
+		workerTemp.longitude, err = strconv.ParseFloat(workersRecord[3], 64)
+		if err != nil {
+			log.Println("Couldn't parse project longitude value", err)
+		}
+		workersDB[workersRecord[1]] = workerTemp
+	}
+	return workersDB
 
 }
+
+func readWorkerProjectHoursCSV() map[string]map[string]float32 {
+	projectFamiliarityDB := make(map[string]map[string]float32)
+	projectFamiliarityDBFile, err := os.Open(projectFamiliarityDBFileName)
+	if err != nil {
+		log.Fatalln("Couldn't open the "+projectFamiliarityDBFileName+" file\r\n", err)
+	}
+	projectFamiliarityData := csv.NewReader(projectFamiliarityDBFile)
+	_, err = projectFamiliarityData.Read() //skip CSV header
+	for {
+		projectFamiliarityRecord, err := projectFamiliarityData.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		workerProjectHours, err := strconv.ParseFloat(projectFamiliarityRecord[2], 64)
+		if err != nil {
+			log.Println("Couldn't parse worker project hours", err)
+		}
+		if _, ok := projectFamiliarityDB[projectFamiliarityRecord[1]]; !ok {
+			projectFamiliarityDB[projectFamiliarityRecord[1]] = make(map[string]float32)
+		}
+		projectFamiliarityDB[projectFamiliarityRecord[1]][projectFamiliarityRecord[0]] = float32(workerProjectHours)
+	}
+	return projectFamiliarityDB
+}
+
+func readWorkerTimeOffCSV() {}
 
 //Generate individual by randomizing the taskDB
 func generateIndividual() individual {
@@ -194,7 +291,7 @@ func calcDistance(latitude1, longitude1, latitude2, longitude2 float64) float32 
 }
 
 //Calculate fitness for every worker for the current task
-func calculateWorkersFitness(task scheduledTask, trade string, workers []scheduledWorker) {
+func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 	for _, v := range workers {
 
 		//Smaller wait time => higher number => better fit
@@ -235,6 +332,52 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 	}
 
 }
+
+/*
+//Calculate fitness for every worker for the current task WITH TRADES
+func calculateWorkersFitness(task scheduledTask, trade string, workers []scheduledWorker) {
+	for _, v := range workers {
+
+		//Smaller wait time => higher number => better fit
+		valueDelay := v.canStartIn
+		if valueDelay == 0 {
+			valueDelay = maxValueDelay
+		} else {
+			valueDelay = 1 / valueDelay
+		}
+
+		//More hours in project => higher number => better fit
+		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID]
+
+		//Shorter distance => higher number => better fit
+		valueDistance := calcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+		if valueDistance == 0 {
+			valueDistance = maxValueDistance
+		} else {
+			valueDistance = 1 / valueDistance
+		}
+
+		 		//Fewer trades => higher number => better fit
+		   		valueTrades := float32(0)
+		   		trades := workersDB[v.workerID].trades
+		   		for _, v := range trades {
+		   			if v == trade {
+		   				valueTrades = float32(1) / float32(len(trades))
+		   				break
+		   			}
+		   		}
+
+		v.valueDistance = valueDistance
+		v.valueProjectFamiliarity = valueProjectFamiliarity
+		//		v.valueTrades = valueTrades
+		v.valueDelay = valueDelay
+		//Calculate AHP fitness for the worker, higher number => better fit
+		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance // + valueTrades*weightTrades
+	}
+
+}
+
+*/
 
 func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledTask, bool) {
 
@@ -314,7 +457,6 @@ func generatePopulationSchedules(population []individual) {
 
 //Generate individual schedule and calculate fitness
 func generateIndividualSchedule(individual individual) individual {
-
 	var workerAssigned bool = true
 	//Infinite loop until no workers can be assigned
 	for condition := true; condition; condition = workerAssigned {
@@ -322,7 +464,7 @@ func generateIndividualSchedule(individual individual) individual {
 		workerAssigned = false
 		//Loop across all tasks
 		for i, task := range individual.tasks {
-			//Process only tasks with remaining trades and with all the dependencies met
+			//Process only tasks with remaining worker slots and with all the dependencies met
 			if len(task.assignees) < len(tasksDB[task.taskID].trades) && task.numPrerequisites == 0 {
 				for _, trade := range tasksDB[task.taskID].trades {
 					//Calculate fitness of all workers for specific task and trade
@@ -331,9 +473,6 @@ func generateIndividualSchedule(individual individual) individual {
 					//Try to assign worker to task and update worker data
 					//TODO: Multiple bool assignments. Any way to make it better?
 					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
-					/* 					if maxStopTime < individual.tasks[i].stopTime {
-						maxStopTime = individual.tasks[i].stopTime
-					} */
 				}
 				//Remove this task from prerequisites for all other tasks if all trades are scheduled
 				if len(task.assignees) == len(tasksDB[task.taskID].trades) {
@@ -352,29 +491,80 @@ func generateIndividualSchedule(individual individual) individual {
 		}
 	}
 
-	//Calculate viability and fitness
+}
 
-	for _, task := range individual.tasks {
-		//If we have tasks/trades with no workers assigned, the individual is a dead end
-		if len(task.assignees) != len(tasksDB[task.taskID].trades) {
-			individual.fitness = deadend
-			break
-		}
-		//Earlier stopTime => faster we finish all the tasks => better individual fitness
-		if individual.fitness < task.stopTime {
-			individual.fitness = task.stopTime
-		}
-	}
+/*
+//Generate individual schedule and calculate fitness WITH TRADES (future version)
+//func generateIndividualScheduleWithTrades(individual individual) individual {
+
+	//var workerAssigned bool = true
+	//Infinite loop until no workers can be assigned
+	 	for condition := true; condition; condition = workerAssigned {
+	   		//Prevent loops if no tasks left to process
+	   		workerAssigned = false
+	   		//Loop across all tasks
+	   		for i, task := range individual.tasks {
+	   			//Process only tasks with remaining trades and with all the dependencies met
+	   			if len(task.assignees) < len(tasksDB[task.taskID].trades) && task.numPrerequisites == 0 {
+	   				for _, trade := range tasksDB[task.taskID].trades {
+	   					//Calculate fitness of all workers for specific task and trade
+	   					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
+	   					calculateWorkersFitness(task, trade, individual.workers)
+	   					//Try to assign worker to task and update worker data
+	   					//TODO: Multiple bool assignments. Any way to make it better?
+	   					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
+	   				}
+	   				//Remove this task from prerequisites for all other tasks if all trades are scheduled
+	   				if len(task.assignees) == len(tasksDB[task.taskID].trades) {
+	   					prerequisiteID := task.taskID
+	   					//Loop over all tasks
+	   					for i, task := range individual.tasks {
+	   						if task.numPrerequisites > 0 {
+	   							//Check if prerequisiteID exists in the prerequisites map in taskDB
+	   							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteID]; ok {
+	   								individual.tasks[i].numPrerequisites--
+	   							}
+	   						}
+	   					}
+	   				}
+	   			}
+	   		}
+	   	}
+*/
+//Calculate viability and fitness
+
+/* 	for _, task := range individual.tasks {
+	   		//If we have tasks/trades with no workers assigned, the individual is a dead end
+	   		if len(task.assignees) != len(tasksDB[task.taskID].trades) {
+	   			individual.fitness = deadend
+	   			break
+	   		}
+	   		//Earlier stopTime => faster we finish all the tasks => better individual fitness
+	   		if individual.fitness < task.stopTime {
+	   			individual.fitness = task.stopTime
+	   		}
+	   	}
 	return individual
 }
+*/
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	//projectsDB = make(map[string]project)
-	//tasksDB = readCSVs()
+	//projectsDB, projectFamiliarityDB, tasksDB, workersDB, workersTimeOffDB = readCSVs()
+
 	projectsDB = readProjectInfoCSV()
-	fmt.Println(projectsDB)
+	tasksDB = readTaskInfoCSV()
+	workersDB = readWorkerInfoCSV()
+	projectFamiliarityDB = readWorkerProjectHoursCSV()
+	readWorkerTimeOffCSV()
+
+	//projectsDB = readProjectInfoCSV()
+	//fmt.Println(projectsDB)
+	//fmt.Println(tasksDB)
+	//fmt.Println(workersDB)
+	fmt.Println(projectFamiliarityDB)
 	population = generatePopulation()
 
 	for i := 0; i < generationsLimit; i++ {

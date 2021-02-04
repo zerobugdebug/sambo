@@ -24,8 +24,8 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize   int     = 5    //size of the population
-	generationsLimit int     = 100  //how many generations to generate
+	populationSize   int     = 1    //size of the population
+	generationsLimit int     = 1    //how many generations to generate
 	crossoverRate    float32 = 1    //how often to do crossover 0%-100% in decimal
 	mutationRate     float32 = 0.25 //how often to do mutation 0%-100% in decimal
 	elitismRate      float32 = 0.05 //how many of the best indviduals to keep intact
@@ -168,6 +168,7 @@ func readTaskInfoCSV() map[string]task {
 		for _, v := range strings.Fields(tasksRecord[3]) {
 			taskTemp.validWorkers[v] = struct{}{}
 		}
+		taskTemp.idealWorkerCount, err = strconv.Atoi(tasksRecord[5])
 
 		strings.Fields(tasksRecord[3])
 		taskTemp.prerequisites = make(map[string]float32)
@@ -280,9 +281,20 @@ func generateIndividual() individual {
 	i := 0
 	for k, v := range tasksDB {
 		newIndividual.tasks[taskOrder[i]].taskID = k
-		newIndividual.tasks[taskOrder[i]].startTime = 0
+		newIndividual.tasks[taskOrder[i]].startTime = -1
 		newIndividual.tasks[taskOrder[i]].assignees = make([]string, 0)
 		newIndividual.tasks[taskOrder[i]].numPrerequisites = len(v.prerequisites)
+		i++
+	}
+
+	i = 0
+	newIndividual.workers = make([]scheduledWorker, len(workersDB))
+	for k, v := range workersDB {
+		newIndividual.workers[i].workerID = k
+		newIndividual.workers[i].canStartIn = 0
+		newIndividual.workers[i].latitude = v.latitude
+		newIndividual.workers[i].longitude = v.longitude
+		newIndividual.workers[i].fitness = 0
 		i++
 	}
 
@@ -367,6 +379,7 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 
 		//Calculate AHP fitness for the worker, higher number => better fit
 		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + weightDemand*valueDemand
+		//log.Printf("%v=%v", v.workerID, v.fitness)
 		// + valueTrades*weightTrades //TRADES IMPLEMENTATION
 	}
 
@@ -385,8 +398,10 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 		//Check if workerID exists in the validWorkers map in taskDB
 		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
 			task.assignees = append(task.assignees, worker.workerID)
+
 			//TODO: Replace with proper calculation and GMaps API
-			if task.startTime < workers[0].canStartIn+drivingSpeed/workers[i].valueDistance {
+			//startTime should be the earliest of all workers working on the task
+			if task.startTime > workers[0].canStartIn+drivingSpeed/workers[i].valueDistance || task.startTime == -1 {
 				task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance
 			}
 
@@ -540,15 +555,18 @@ func generatePopulationSchedules(population []individual) {
 func generateIndividualSchedule(individual individual) individual {
 	var workerAssigned bool = true
 	//Infinite loop until no workers can be assigned
+	log.Println("Infinite loop until no workers can be assigned")
 	for condition := true; condition; condition = workerAssigned {
 		//Prevent loops if no tasks left to process
 		workerAssigned = false
 		//Loop across all tasks
 		for i, task := range individual.tasks {
+			log.Println("taskID =", task.taskID)
 			//Process only tasks with remaining worker slots and with all the dependencies met
 			if len(task.assignees) < tasksDB[task.taskID].idealWorkerCount && task.numPrerequisites == 0 {
 				//Assign workers to the task until idealWorkerCount
 				for j := len(individual.tasks[i].assignees); j < tasksDB[task.taskID].idealWorkerCount; j++ {
+					log.Println("worker j =", j)
 					//Calculate fitness of idealWorkerCount workers for specific task
 					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
 					calculateWorkersFitness(task, individual.workers)
@@ -661,7 +679,7 @@ func main() {
 	//projectsDB = readProjectInfoCSV()
 	//fmt.Println(projectsDB)
 	//fmt.Println(tasksDB)
-	fmt.Println(workersDB)
+	//fmt.Println(workersDB)
 	//fmt.Println(projectFamiliarityDB)
 	population = generatePopulation()
 
@@ -670,6 +688,7 @@ func main() {
 		generatePopulationSchedules(population)
 		//Sort population in the fitness order
 		sortPopulation(population)
+		fmt.Println(population[0])
 		//Mutate and crossover population
 		transmogrifyPopulation(population)
 	}

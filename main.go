@@ -25,12 +25,13 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize   int     = 1    //size of the population
-	generationsLimit int     = 1    //how many generations to generate
-	crossoverRate    float32 = 1    //how often to do crossover 0%-100% in decimal
-	mutationRate     float32 = 0.25 //how often to do mutation 0%-100% in decimal
-	elitismRate      float32 = 0.05 //how many of the best indviduals to keep intact
-	deadend          float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
+	populationSize    int     = 1    //size of the population
+	generationsLimit  int     = 1    //how many generations to generate
+	crossoverRate     float32 = 1    //how often to do crossover 0%-100% in decimal
+	mutationRate      float32 = 0.25 //how often to do mutation 0%-100% in decimal
+	elitismRate       float32 = 0.05 //how many of the best indviduals to keep intact
+	deadend           float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
+	tourneySampleSize int     = 5
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -327,7 +328,6 @@ func resetIndividual(individual individual) individual {
 		individual.workers[i].longitude = v.longitude
 		individual.workers[i].fitness = 0
 	}
-
 	return individual
 }
 
@@ -569,6 +569,39 @@ func transmogrifyPopulation(population []individual) {
 		}
 		population[elitesNum+i] = resetIndividual(population[elitesNum+i])
 	}
+}
+
+//Tournament selection for the crossover
+func tourneySelect(population []individual, number int) []individual {
+	//Create slice of randmoly permutated individuals numbers
+	sampleOrder := rand.Perm(len(population))
+	var bestIndividuals []individual
+	var bestIndividualNumber int
+	var sampleOrderNumber int
+	var bestIndividualFitness float32
+	for i := 0; i < number; i++ {
+		bestIndividualNumber = 0
+		sampleOrderNumber = 0
+		bestIndividualFitness = float32(math.MaxFloat32)
+		//Select best individual number from first tourneySampleSize elements in sampleOrder
+		for j, v := range sampleOrder[:tourneySampleSize] {
+			if population[v].fitness < bestIndividualFitness {
+				bestIndividualNumber = v
+				bestIndividualFitness = population[v].fitness
+				sampleOrderNumber = j
+			}
+		}
+		//Add best individual to return slice
+		bestIndividuals = append(bestIndividuals, population[bestIndividualNumber])
+		//Remove best individual number from the selection
+		//Using copy-last&truncate algorithm, due to O(1) complexity
+		sampleOrder[sampleOrderNumber] = sampleOrder[len(sampleOrder)-1]
+		sampleOrder = sampleOrder[:len(sampleOrder)-1]
+		//Shuffle remaining individual numbers
+		rand.Shuffle(len(sampleOrder), func(i, j int) { sampleOrder[i], sampleOrder[j] = sampleOrder[j], sampleOrder[i] })
+		fmt.Println(bestIndividualNumber)
+	}
+	return bestIndividuals
 }
 
 func mutateIndividual(individual individual) individual {

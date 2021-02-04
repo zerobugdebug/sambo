@@ -4,7 +4,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/withmandala/go-log"
 )
 
 const (
@@ -34,19 +35,20 @@ const (
 
 //Worker best fit, weighted decision matrix (AHP)
 const (
-	weightDistance float32 = 0.1
-	//weightTrades             float32 = 1 //for the trades implementation
-	weightDelay              float32 = 0.01
-	weightProjectFamiliarity float32 = 0.5
+	weightDistance           float32 = 1
+	weightDelay              float32 = 1
+	weightProjectFamiliarity float32 = 0.01
 	weightDemand             float32 = 1
 	maxValueDistance         float32 = 100
 	maxValueDelay            float32 = 100
 	maxValueDemand           float32 = 1
+	//weightTrades             float32 = 1 //for the trades implementation
+
 )
 
 //Additional constants
 const (
-	drivingSpeed float32 = 10 //cheap alternative to GMaps API
+	drivingSpeed float32 = 0.0333333 //cheap alternative to GMaps API, 1/30 KMH
 )
 
 type worker struct {
@@ -106,8 +108,18 @@ var workersDB map[string]worker                        //key is the worker ID
 var projectsDB map[string]project                      //key is the project ID
 var projectFamiliarityDB map[string]map[string]float32 //key1 is the project ID, key2 is the worker ID
 
+var loggerInfo = log.New(os.Stdout).WithDebug()
+
 func (task task) print() {
 	fmt.Printf("%+v\n", task)
+}
+
+func (task scheduledTask) print() {
+	fmt.Printf("%+v\n", task)
+}
+
+func (worker scheduledWorker) print() {
+	fmt.Printf("%+v\n", worker)
 }
 
 func (individual individual) print() {
@@ -119,7 +131,7 @@ func readProjectInfoCSV() map[string]project {
 	projectsDB := make(map[string]project)
 	projectsDBFile, err := os.Open(projectsDBFileName)
 	if err != nil {
-		log.Fatalln("Couldn't open the "+projectsDBFileName+" file\r\n", err)
+		loggerInfo.Fatal("Couldn't open the "+projectsDBFileName+" file\r\n", err)
 	}
 	projectsData := csv.NewReader(projectsDBFile)
 	_, err = projectsData.Read() //skip CSV header
@@ -129,16 +141,16 @@ func readProjectInfoCSV() map[string]project {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			loggerInfo.Fatal(err)
 		}
 		projectTemp.name = projectsRecord[1]
 		projectTemp.latitude, err = strconv.ParseFloat(projectsRecord[2], 64)
 		if err != nil {
-			log.Println("Couldn't parse project latitude value", err)
+			loggerInfo.Error("Couldn't parse project latitude value", err)
 		}
 		projectTemp.longitude, err = strconv.ParseFloat(projectsRecord[3], 64)
 		if err != nil {
-			log.Println("Couldn't parse project longitude value", err)
+			loggerInfo.Error("Couldn't parse project longitude value", err)
 		}
 		projectsDB[projectsRecord[0]] = projectTemp
 	}
@@ -150,7 +162,7 @@ func readTaskInfoCSV() map[string]task {
 	tasksDB := make(map[string]task)
 	tasksDBFile, err := os.Open(tasksDBFileName)
 	if err != nil {
-		log.Fatalln("Couldn't open the "+tasksDBFileName+" file\r\n", err)
+		loggerInfo.Fatal("Couldn't open the "+tasksDBFileName+" file\r\n", err)
 	}
 	tasksData := csv.NewReader(tasksDBFile)
 	_, err = tasksData.Read() //skip CSV header
@@ -160,7 +172,7 @@ func readTaskInfoCSV() map[string]task {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			loggerInfo.Fatal(err)
 		}
 		taskTemp.project = tasksRecord[0]
 		taskTemp.name = tasksRecord[2]
@@ -177,15 +189,15 @@ func readTaskInfoCSV() map[string]task {
 		for i, v := range prerequisitesTemp {
 			lagHours, err := strconv.ParseFloat(lagHoursTemp[i], 32)
 			if err != nil {
-				log.Println("Couldn't parse Lag hours value", err)
-				log.Println("Original row: ", tasksRecord)
+				loggerInfo.Warn("Couldn't parse Lag hours value", err)
+				loggerInfo.Warn("Original row: ", tasksRecord)
 			}
 			taskTemp.prerequisites[taskTemp.project+"."+v] = float32(lagHours)
 		}
 		tempDuration, err := strconv.ParseFloat(tasksRecord[8], 32)
 		if err != nil {
-			log.Println("Couldn't parse task duration value", err)
-			log.Println("Original row: ", tasksRecord)
+			loggerInfo.Warn("Couldn't parse task duration value", err)
+			loggerInfo.Warn("Original row: ", tasksRecord)
 
 		}
 		taskTemp.duration = float32(tempDuration)
@@ -199,7 +211,7 @@ func readWorkerInfoCSV() map[string]worker {
 	workersDB := make(map[string]worker)
 	workersDBFile, err := os.Open(workersDBFileName)
 	if err != nil {
-		log.Fatalln("Couldn't open the "+workersDBFileName+" file\r\n", err)
+		loggerInfo.Fatal("Couldn't open the "+workersDBFileName+" file\r\n", err)
 	}
 	workersData := csv.NewReader(workersDBFile)
 	_, err = workersData.Read() //skip CSV header
@@ -209,16 +221,16 @@ func readWorkerInfoCSV() map[string]worker {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			loggerInfo.Fatal(err)
 		}
 		workerTemp.name = workersRecord[0]
 		workerTemp.latitude, err = strconv.ParseFloat(workersRecord[2], 64)
 		if err != nil {
-			log.Println("Couldn't parse project latitude value", err)
+			loggerInfo.Warn("Couldn't parse project latitude value", err)
 		}
 		workerTemp.longitude, err = strconv.ParseFloat(workersRecord[3], 64)
 		if err != nil {
-			log.Println("Couldn't parse project longitude value", err)
+			loggerInfo.Warn("Couldn't parse project longitude value", err)
 		}
 		workersDB[workersRecord[1]] = workerTemp
 	}
@@ -230,7 +242,7 @@ func readWorkerProjectHoursCSV() map[string]map[string]float32 {
 	projectFamiliarityDB := make(map[string]map[string]float32)
 	projectFamiliarityDBFile, err := os.Open(projectFamiliarityDBFileName)
 	if err != nil {
-		log.Fatalln("Couldn't open the "+projectFamiliarityDBFileName+" file\r\n", err)
+		loggerInfo.Fatal("Couldn't open the "+projectFamiliarityDBFileName+" file\r\n", err)
 	}
 	projectFamiliarityData := csv.NewReader(projectFamiliarityDBFile)
 	_, err = projectFamiliarityData.Read() //skip CSV header
@@ -240,11 +252,11 @@ func readWorkerProjectHoursCSV() map[string]map[string]float32 {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			loggerInfo.Fatal(err)
 		}
 		workerProjectHours, err := strconv.ParseFloat(projectFamiliarityRecord[2], 64)
 		if err != nil {
-			log.Println("Couldn't parse worker project hours", err)
+			loggerInfo.Warn("Couldn't parse worker project hours", err)
 		}
 		if _, ok := projectFamiliarityDB[projectFamiliarityRecord[1]]; !ok {
 			projectFamiliarityDB[projectFamiliarityRecord[1]] = make(map[string]float32)
@@ -301,6 +313,24 @@ func generateIndividual() individual {
 	return newIndividual
 }
 
+//Reset individual state
+func resetIndividual(individual individual) individual {
+	for i, v := range individual.tasks {
+		individual.tasks[i].startTime = -1
+		individual.tasks[i].assignees = make([]string, 0)
+		individual.tasks[i].numPrerequisites = len(tasksDB[v.taskID].prerequisites)
+	}
+
+	for i, v := range individual.workers {
+		individual.workers[i].canStartIn = 0
+		individual.workers[i].latitude = v.latitude
+		individual.workers[i].longitude = v.longitude
+		individual.workers[i].fitness = 0
+	}
+
+	return individual
+}
+
 func generatePopulation() []individual {
 	var population []individual
 	for i := 0; i < populationSize; i++ {
@@ -324,14 +354,14 @@ func calcDistance(latitude1, longitude1, latitude2, longitude2 float64) float32 
 		distanceCos = 1
 	}
 
-	distance := distanceCos * earthRadius
+	distance := math.Acos(distanceCos) * earthRadius
 
 	return float32(distance)
 }
 
 //Calculate fitness for every worker for the current task
 func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
-	for _, v := range workers {
+	for i, v := range workers {
 
 		//Smaller wait time => higher number => better fit
 		valueDelay := v.canStartIn
@@ -346,6 +376,8 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 
 		//Shorter distance => higher number => better fit
 		valueDistance := calcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+		//loggerInfo.Debug(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+
 		if valueDistance == 0 {
 			valueDistance = maxValueDistance
 		} else {
@@ -371,15 +403,17 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 			   			}
 			   		}
 		*/
-		v.valueDistance = valueDistance
-		v.valueProjectFamiliarity = valueProjectFamiliarity
-		v.valueDemand = valueDemand
-		v.valueDelay = valueDelay
+		workers[i].valueDistance = valueDistance
+		workers[i].valueProjectFamiliarity = valueProjectFamiliarity
+		workers[i].valueDemand = valueDemand
+		workers[i].valueDelay = valueDelay
 		//v.valueTrades = valueTrades //TRADES IMPLEMENTATION
 
+		//loggerInfo.Debug("Values=", workers[i].workerID, valueDelay, valueProjectFamiliarity, valueDistance, valueDemand)
 		//Calculate AHP fitness for the worker, higher number => better fit
-		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + weightDemand*valueDemand
-		//log.Printf("%v=%v", v.workerID, v.fitness)
+		workers[i].fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + valueDemand*weightDemand
+		//loggerInfo.Debug("Normalized=", workers[i].workerID, valueDelay*weightDelay, valueProjectFamiliarity*weightProjectFamiliarity, valueDistance*weightDistance, valueDemand*weightDemand, workers[i].fitness)
+		//loggerInfo.Debugf("%v=%v", v.workerID, workers[i].fitness)
 		// + valueTrades*weightTrades //TRADES IMPLEMENTATION
 	}
 
@@ -392,29 +426,36 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 	sort.Slice(workers, func(i, j int) bool {
 		return workers[i].fitness > workers[j].fitness
 	})
+	//loggerInfo.Debug(task)
 	//Scan through the workers slice to find the first available worker
 	for i, worker := range workers {
 		//Assign only if worker can be assigned to this task
 		//Check if workerID exists in the validWorkers map in taskDB
 		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
 			task.assignees = append(task.assignees, worker.workerID)
-
+			loggerInfo.Debugf("Can be assigned, worker:%v", worker)
 			//TODO: Replace with proper calculation and GMaps API
 			//startTime should be the earliest of all workers working on the task
-			if task.startTime > workers[0].canStartIn+drivingSpeed/workers[i].valueDistance || task.startTime == -1 {
-				task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance
+			if task.startTime == -1 {
+				//Task was never scheduled and task has no predecessors
+				task.startTime = workers[i].canStartIn + drivingSpeed/workers[i].valueDistance
+			} else if task.stopTime == 0 && task.startTime < workers[i].canStartIn+drivingSpeed/workers[i].valueDistance {
+				//Task was never scheduled, but start time defined by predecessors
+				task.startTime = workers[i].canStartIn + drivingSpeed/workers[i].valueDistance
 			}
 
-			//Keep stop time intact for the multiple trades with different availability
-			if task.stopTime-task.startTime < tasksDB[task.taskID].duration {
-				task.stopTime = task.startTime + tasksDB[task.taskID].duration
+			//loggerInfo.Debug(task)
+			//Extend stop time if current worker can't finish in time
+			if workers[i].canStartIn+drivingSpeed/workers[i].valueDistance+tasksDB[task.taskID].duration > task.stopTime {
+				task.stopTime = workers[i].canStartIn + drivingSpeed/workers[i].valueDistance + tasksDB[task.taskID].duration
 			}
+			//loggerInfo.Debug(task)
 			//Change worker's next start time
-			workers[i].canStartIn = task.startTime + tasksDB[task.taskID].duration
+			workers[i].canStartIn = task.stopTime
 
 			//Change worker's location
-			workers[i].latitude = projectsDB[task.taskID].latitude
-			workers[i].longitude = projectsDB[task.taskID].longitude
+			workers[i].latitude = projectsDB[tasksDB[task.taskID].project].latitude
+			workers[i].longitude = projectsDB[tasksDB[task.taskID].project].longitude
 
 			//Assign success flag to prevent loops on the calling function
 			workerAssigned = true
@@ -526,6 +567,7 @@ func transmogrifyPopulation(population []individual) {
 			//TODO: Slice will be modified in place, need to check
 			population[elitesNum+i] = mutateIndividual(population[elitesNum+i])
 		}
+		population[elitesNum+i] = resetIndividual(population[elitesNum+i])
 	}
 }
 
@@ -555,31 +597,32 @@ func generatePopulationSchedules(population []individual) {
 func generateIndividualSchedule(individual individual) individual {
 	var workerAssigned bool = true
 	//Infinite loop until no workers can be assigned
-	log.Println("Infinite loop until no workers can be assigned")
+	loggerInfo.Debug("Infinite loop until no workers can be assigned")
 	for condition := true; condition; condition = workerAssigned {
 		//Prevent loops if no tasks left to process
 		workerAssigned = false
 		//Loop across all tasks
 		for i, task := range individual.tasks {
-			log.Println("taskID =", task.taskID)
+			//loggerInfo.Debug("taskID =", task.taskID)
 			//Process only tasks with remaining worker slots and with all the dependencies met
 			if len(task.assignees) < tasksDB[task.taskID].idealWorkerCount && task.numPrerequisites == 0 {
 				//Assign workers to the task until idealWorkerCount
 				for j := len(individual.tasks[i].assignees); j < tasksDB[task.taskID].idealWorkerCount; j++ {
-					log.Println("worker j =", j)
+					loggerInfo.Debug("worker j =", j)
 					//Calculate fitness of idealWorkerCount workers for specific task
 					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
 					calculateWorkersFitness(task, individual.workers)
+					loggerInfo.Debug(task)
 					//Try to assign worker to task and update worker data
 					//TODO: Multiple bool assignments. Any way to make it better?
 					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
+					loggerInfo.Debug(individual.tasks[i])
 				}
 				//Modify dependant tasks if idealWorkerCount workers are scheduled
 				if len(individual.tasks[i].assignees) == tasksDB[task.taskID].idealWorkerCount {
-					prerequisiteTask := task
+					prerequisiteTask := individual.tasks[i]
 					//Loop over all tasks
 					for i, task := range individual.tasks {
-
 						if task.numPrerequisites > 0 {
 							//Check if prerequisiteTask.taskID exists in the prerequisites map in tasksDB
 							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID]; ok {
@@ -600,7 +643,19 @@ func generateIndividualSchedule(individual individual) individual {
 		}
 	}
 
+	for _, task := range individual.tasks {
+		//If we have tasks/trades with no workers assigned, the individual is a dead end
+		if len(task.assignees) != tasksDB[task.taskID].idealWorkerCount {
+			individual.fitness = deadend
+			break
+		}
+		//Earlier stopTime => faster we finish all the tasks => better individual fitness
+		if individual.fitness < task.stopTime {
+			individual.fitness = task.stopTime
+		}
+	}
 	return individual
+
 }
 
 /*
@@ -688,7 +743,12 @@ func main() {
 		generatePopulationSchedules(population)
 		//Sort population in the fitness order
 		sortPopulation(population)
-		fmt.Println(population[0])
+		fmt.Println("Generation ", i)
+		for _, v := range population[0].tasks {
+			fmt.Println(v)
+		}
+
+		fmt.Println(population[0].fitness)
 		//Mutate and crossover population
 		transmogrifyPopulation(population)
 	}

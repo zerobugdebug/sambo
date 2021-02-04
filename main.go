@@ -25,13 +25,17 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize    int     = 1    //size of the population
-	generationsLimit  int     = 1    //how many generations to generate
-	crossoverRate     float32 = 1    //how often to do crossover 0%-100% in decimal
-	mutationRate      float32 = 0.25 //how often to do mutation 0%-100% in decimal
-	elitismRate       float32 = 0.05 //how many of the best indviduals to keep intact
-	deadend           float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
-	tourneySampleSize int     = 5
+	populationSize         int     = 1    //size of the population
+	generationsLimit       int     = 1    //how many generations to generate
+	crossoverRate          float32 = 1    //how often to do crossover 0%-100% in decimal
+	mutationRate           float32 = 0.25 //how often to do mutation 0%-100% in decimal
+	elitismRate            float32 = 0.05 //how many of the best indviduals to keep intact
+	deadend                float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
+	tourneySampleSize      int     = 5    //sample size for the tournament selection
+	crossoverParentsNumber int     = 2    //number of parents for the crossover
+	maxCrossoverLength     int     = 5    //max number of sequential tasks to cross between individuals
+	maxMutatedGenes        int     = 10   //maximum number of mutated genes
+	mutationTypePreference float32 = 0.5  //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -551,24 +555,30 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 */
 
 //Apply crossovers and mutations on non-elite individuals
-func transmogrifyPopulation(population []individual) {
+func transmogrifyPopulation(population []individual) []individual {
 	elitesNum := int(elitismRate * float32(len(population)))
-	for i := range population[elitesNum:] {
-		//Do crossover for some indviduals
-		if rand.Float32() < crossoverRate {
-			i1 := elitesNum + i
-			//Randomly select second parent from all individuals after the current one
-			i2 := i1 + rand.Intn(len(population)-i1)
-			//TODO: Slice will be modified in place, need to check
-			population[i1], population[i2] = crossoverIndividuals(population[i1], population[i2])
-		}
-		//Do mutation for some indviduals
-		if rand.Float32() < mutationRate {
-			//TODO: Slice will be modified in place, need to check
-			population[elitesNum+i] = mutateIndividual(population[elitesNum+i])
-		}
-		population[elitesNum+i] = resetIndividual(population[elitesNum+i])
+	var newPopulation []individual
+	var tempPopulation []individual
+	//Keep elites in the new population
+	newPopulation = population[:elitesNum]
+	remainingIndividualsNumber := len(population) - elitesNum
+	//Generate len(population)-elitesNum additonal individuals
+	for condition := true; condition; condition = remainingIndividualsNumber < 0 {
+		//Select crossoverParentsNumber from the popualtion with Torunament Selection
+		tempPopulation = tourneySelect(population, crossoverParentsNumber)
+		//Apply crossover to the tempPopulation
+		tempPopulation = crossoverIndividuals(tempPopulation)
+		//Apply mutation to the tempPopulation
+		tempPopulation = mutateIndividuals(tempPopulation)
+		//Append tempPopulation to the new population
+		newPopulation = append(newPopulation, tempPopulation...)
+		//Update remaining number of individuals to generate
+		remainingIndividualsNumber -= crossoverParentsNumber
 	}
+	for i := range newPopulation {
+		newPopulation[i] = resetIndividual(newPopulation[i])
+	}
+	return newPopulation
 }
 
 //Tournament selection for the crossover
@@ -604,12 +614,88 @@ func tourneySelect(population []individual, number int) []individual {
 	return bestIndividuals
 }
 
-func mutateIndividual(individual individual) individual {
+func displacementMutation(individual individual) individual {
+	//Randomly select number of genes to mutate, but at least 1
+	numOfGenesToMutate := rand.Intn(maxMutatedGenes-1) + 1
+	for i := 0; i < numOfGenesToMutate; i++ {
+		//Generate random old position for the gene between 0 and one element before last
+		oldPosition := rand.Intn(len(individual.tasks) - 1)
+		//Generate random new position for the gene between oldPosition+1 and last element
+		newPosition := rand.Intn(len(individual.tasks)-oldPosition-1) + oldPosition + 1
+		//Store the original taskID at the oldPosition
+		oldTaskID := individual.tasks[oldPosition].taskID
+		//Shift all taskIDs one task back
+		for j := range individual.tasks[oldPosition:newPosition] {
+			individual.tasks[j].taskID = individual.tasks[j+1].taskID
+		}
+		//Restore the original taskID to the newPosition
+		individual.tasks[newPosition].taskID = oldTaskID
+	}
 	return individual
 }
 
-func crossoverIndividuals(individual1, individual2 individual) (individual, individual) {
-	return individual1, individual2
+func swapMutation(individual individual) individual {
+	//Randomly select number of genes to mutate, but at least 1
+	numOfGenesToMutate := rand.Intn(maxMutatedGenes-1) + 1
+	sampleOrder := rand.Perm(len(individual.tasks))
+	for i := 0; i < numOfGenesToMutate; i++ {
+		//Swap taskIDs for the task with number sampleOrder[i] and sampleOrder[len(individual.tasks)-1] to make it easier to account for the border values
+		individual.tasks[sampleOrder[i]].taskID, individual.tasks[sampleOrder[len(individual.tasks)-i]].taskID = individual.tasks[sampleOrder[len(individual.tasks)-i]].taskID, individual.tasks[sampleOrder[i]].taskID
+	}
+	return individual
+
+}
+
+func mutateIndividuals(individuals []individual) []individual {
+	var mutatedIndividuals []individual
+	//var crossoverStart, crossoverEnd, crossoverLen int
+	//Copy parent to child individuals slice
+	mutatedIndividuals = make([]individual, len(individuals))
+	copy(mutatedIndividuals, individuals)
+	for i := range mutatedIndividuals {
+		//Check if we need to mutate
+		if rand.Float32() < mutationRate {
+			if rand.Float32() < mutationTypePreference {
+				//Do the displacement mutation
+				mutatedIndividuals[i] = displacementMutation(mutatedIndividuals[i])
+			} else {
+				//Do the swap mutation
+				mutatedIndividuals[i] = swapMutation(mutatedIndividuals[i])
+			}
+		}
+	}
+	return mutatedIndividuals
+}
+
+func crossoverIndividuals(parentIndividuals []individual) []individual {
+	var childIndividuals []individual
+	//var crossoverStart, crossoverEnd, crossoverLen int
+	//Copy parent to child individuals slice
+	childIndividuals = make([]individual, len(parentIndividuals))
+	copy(childIndividuals, parentIndividuals)
+	//Check if we need to crossover
+	if rand.Float32() < crossoverRate {
+		crossoverStart := rand.Intn(len(childIndividuals[0].tasks))
+		crossoverLen := rand.Intn(maxCrossoverLength)
+		crossoverEnd := crossoverStart + crossoverLen
+		if crossoverEnd > len(childIndividuals[0].tasks) {
+			crossoverEnd = len(childIndividuals[0].tasks)
+		}
+		//TODO: Add random selection of the swappable individuals
+		for i := range childIndividuals {
+			//Swap part of the tasks slice between first and second individual
+			for j := crossoverStart; j < crossoverEnd; j++ {
+				first := i
+				second := i + 1
+				if second == len(childIndividuals) {
+					second = 0
+				}
+				//Swap current task between first and second individual
+				childIndividuals[first].tasks[j], childIndividuals[second].tasks[j] = childIndividuals[second].tasks[j], childIndividuals[first].tasks[j]
+			}
+		}
+	}
+	return childIndividuals
 }
 
 func sortPopulation(population []individual) {
@@ -783,6 +869,6 @@ func main() {
 
 		fmt.Println(population[0].fitness)
 		//Mutate and crossover population
-		transmogrifyPopulation(population)
+		population = transmogrifyPopulation(population)
 	}
 }

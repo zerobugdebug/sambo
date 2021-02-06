@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/withmandala/go-log"
+	"gitlab.com/alex.skylight/sambo/helpers"
 )
 
 const (
@@ -375,25 +376,6 @@ func generatePopulation() []individual {
 	return population
 }
 
-//Calculate haversine distance between 2 points
-func calcDistance(latitude1, longitude1, latitude2, longitude2 float64) float32 {
-	const earthRadius float64 = 6371 //Earth radius in km
-	latitude1Radian := float64(math.Pi * latitude1 / 180)
-	latitude2Radian := float64(math.Pi * latitude2 / 180)
-
-	longitudeDiff := float64(longitude1 - longitude2)
-	longitudeDiffRadian := float64(math.Pi * longitudeDiff / 180)
-
-	distanceCos := math.Sin(latitude1Radian)*math.Sin(latitude2Radian) + math.Cos(latitude1Radian)*math.Cos(latitude2Radian)*math.Cos(longitudeDiffRadian)
-	if distanceCos > 1 {
-		distanceCos = 1
-	}
-
-	distance := math.Acos(distanceCos) * earthRadius
-
-	return float32(distance)
-}
-
 //Calculate fitness for every worker for the current task
 func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 	for i, v := range workers {
@@ -410,7 +392,7 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID]
 
 		//Shorter distance => higher number => better fit
-		valueDistance := calcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+		valueDistance := helpers.CalcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 		//logger.Debug(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 
 		if valueDistance == 0 {
@@ -729,8 +711,8 @@ func mutateIndividuals(individuals []individual) []individual {
 	var mutatedIndividuals []individual
 	//var crossoverStart, crossoverEnd, crossoverLen int
 	//Copy parent to child individuals slice
-	mutatedIndividuals = make([]individual, len(individuals))
-	copy(mutatedIndividuals, individuals)
+	//mutatedIndividuals = make([]individual, len(individuals))
+	mutatedIndividuals = copyPopulation(individuals)
 	for i := range mutatedIndividuals {
 		//Check if we need to mutate
 		if rand.Float32() < mutationRate {
@@ -750,8 +732,8 @@ func crossoverIndividuals(parentIndividuals []individual) []individual {
 	var childIndividuals []individual
 	//var crossoverStart, crossoverEnd, crossoverLen int
 	//Copy parent to child individuals slice
-	childIndividuals = make([]individual, len(parentIndividuals))
-	copy(childIndividuals, parentIndividuals)
+	//childIndividuals = make([]individual, len(parentIndividuals))
+	childIndividuals = copyPopulation(parentIndividuals)
 	//Check if we need to crossover
 	if rand.Float32() < crossoverRate {
 		crossoverStart := rand.Intn(len(childIndividuals[0].tasks))

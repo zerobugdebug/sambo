@@ -27,15 +27,15 @@ const (
 const (
 	populationSize         int     = 100  //size of the population
 	generationsLimit       int     = 10   //how many generations to generate
-	crossoverRate          float32 = 0.8  //how often to do crossover 0%-100% in decimal
-	mutationRate           float32 = 0.8  //how often to do mutation 0%-100% in decimal
+	crossoverRate          float32 = 1    //how often to do crossover 0%-100% in decimal
+	mutationRate           float32 = 1    //how often to do mutation 0%-100% in decimal
 	elitismRate            float32 = 0.1  //how many of the best indviduals to keep intact
 	deadend                float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
-	tourneySampleSize      int     = 5    //sample size for the tournament selection
+	tourneySampleSize      int     = 10   //sample size for the tournament selection, should be less than population size
 	crossoverParentsNumber int     = 2    //number of parents for the crossover
-	maxCrossoverLength     int     = 5    //max number of sequential tasks to cross between individuals
-	maxMutatedGenes        int     = 5    //maximum number of mutated genes, min=2
-	mutationTypePreference float32 = 0.5  //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
+	maxCrossoverLength     int     = 10   //max number of sequential tasks to cross between individuals
+	maxMutatedGenes        int     = 10   //maximum number of mutated genes, min=2
+	mutationTypePreference float32 = 0    //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -53,7 +53,10 @@ const (
 
 //Additional constants
 const (
-	drivingSpeed float32 = 0.05 //cheap alternative to GMaps API, 1/20 KMH
+	drivingSpeed          float32 = 0.05               //cheap alternative to GMaps API, 1/20 KMH
+	defaultDateFormat     string  = "2006-01-02"       //format of date in the csv files
+	defaultTimeFormat     string  = "15:04"            //format of time in the csv files
+	defaultDateTimeFormat string  = "2006-01-02T15:04" //format of datetime in the csv files
 )
 
 type worker struct {
@@ -77,9 +80,13 @@ type scheduledWorker struct {
 }
 
 type project struct {
-	name      string
-	latitude  float64
-	longitude float64
+	name            string
+	latitude        float64
+	longitude       float64
+	targetStartDate time.Time
+	targetEndDate   time.Time
+	dailyStartTime  time.Time
+	dailyEndTime    time.Time
 }
 
 type individual struct {
@@ -113,9 +120,7 @@ var workersDB map[string]worker                        //key is the worker ID
 var projectsDB map[string]project                      //key is the project ID
 var projectFamiliarityDB map[string]map[string]float32 //key1 is the project ID, key2 is the worker ID
 
-//var logger = log.New(os.Stdout).WithDebug()
-var logger = log.New(os.Stdout).WithoutDebug()
-var loggerFile *log.Logger
+var logger = log.New(os.Stdout).WithoutDebug().WithColor()
 
 func (task task) print() {
 	fmt.Printf("%+v\n", task)
@@ -153,11 +158,23 @@ func readProjectInfoCSV() map[string]project {
 		projectTemp.name = projectsRecord[1]
 		projectTemp.latitude, err = strconv.ParseFloat(projectsRecord[2], 64)
 		if err != nil {
-			logger.Error("Couldn't parse project latitude value", err)
+			logger.Error("Original record: ", projectsRecord)
+			logger.Fatal("Couldn't parse project latitude value", err)
 		}
 		projectTemp.longitude, err = strconv.ParseFloat(projectsRecord[3], 64)
 		if err != nil {
-			logger.Error("Couldn't parse project longitude value", err)
+			logger.Error("Original record: ", projectsRecord)
+			logger.Fatal("Couldn't parse project longitude value", err)
+		}
+		projectTemp.targetStartDate, err = time.Parse(defaultDateFormat, projectsRecord[5])
+		if err != nil {
+			logger.Error("Original record: ", projectsRecord)
+			logger.Fatal("Couldn't parse project target start date value", err)
+		}
+		projectTemp.targetEndDate, err = time.Parse(defaultDateFormat, projectsRecord[6])
+		if err != nil {
+			logger.Error("Original record: ", projectsRecord)
+			logger.Fatal("Couldn't parse project target end date value", err)
 		}
 		projectsDB[projectsRecord[0]] = projectTemp
 	}
@@ -196,16 +213,15 @@ func readTaskInfoCSV() map[string]task {
 		for i, v := range prerequisitesTemp {
 			lagHours, err := strconv.ParseFloat(lagHoursTemp[i], 32)
 			if err != nil {
-				logger.Warn("Couldn't parse Lag hours value", err)
-				logger.Warn("Original row: ", tasksRecord)
+				logger.Error("Original record: ", tasksRecord)
+				logger.Fatal("Couldn't parse lag hours value", err)
 			}
 			taskTemp.prerequisites[taskTemp.project+"."+v] = float32(lagHours)
 		}
 		tempDuration, err := strconv.ParseFloat(tasksRecord[8], 32)
 		if err != nil {
-			logger.Warn("Couldn't parse task duration value", err)
-			logger.Warn("Original row: ", tasksRecord)
-
+			logger.Error("Original record: ", tasksRecord)
+			logger.Fatal("Couldn't parse task duration value", err)
 		}
 		taskTemp.duration = float32(tempDuration)
 		tasksDB[taskTemp.project+"."+tasksRecord[1]] = taskTemp
@@ -233,11 +249,13 @@ func readWorkerInfoCSV() map[string]worker {
 		workerTemp.name = workersRecord[0]
 		workerTemp.latitude, err = strconv.ParseFloat(workersRecord[2], 64)
 		if err != nil {
-			logger.Warn("Couldn't parse project latitude value", err)
+			logger.Error("Original record: ", workersRecord)
+			logger.Fatal("Couldn't parse worker longitude value", err)
 		}
 		workerTemp.longitude, err = strconv.ParseFloat(workersRecord[3], 64)
 		if err != nil {
-			logger.Warn("Couldn't parse project longitude value", err)
+			logger.Error("Original record: ", workersRecord)
+			logger.Fatal("Couldn't parse worker longitude value", err)
 		}
 		workersDB[workersRecord[1]] = workerTemp
 	}
@@ -916,14 +934,6 @@ func prettyPrintTask(task scheduledTask) {
 func main() {
 
 	var population []individual
-
-	f, err := os.Create("app.log")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	loggerFile = log.New(f)
-
 	rand.Seed(time.Now().UnixNano())
 
 	//projectsDB = make(map[string]project)

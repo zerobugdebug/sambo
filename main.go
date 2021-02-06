@@ -44,8 +44,8 @@ const (
 	weightDelay              float32 = 1
 	weightProjectFamiliarity float32 = 0.01
 	weightDemand             float32 = 1
-	maxValueDistance         float32 = 100
-	maxValueDelay            float32 = 100
+	maxvalueDriving          float32 = 1000
+	maxValueDelay            float32 = 1000
 	maxValueDemand           float32 = 1
 	//weightTrades             float32 = 1 //for the trades implementation
 
@@ -53,10 +53,9 @@ const (
 
 //Additional constants
 const (
-	drivingSpeed          float32 = 0.05               //cheap alternative to GMaps API, 1/20 KMH
-	defaultDateFormat     string  = "2006-01-02"       //format of date in the csv files
-	defaultTimeFormat     string  = "15:04"            //format of time in the csv files
-	defaultDateTimeFormat string  = "2006-01-02T15:04" //format of datetime in the csv files
+	defaultDateFormat     string = "2006-01-02"       //format of date in the csv files
+	defaultTimeFormat     string = "15:04"            //format of time in the csv files
+	defaultDateTimeFormat string = "2006-01-02T15:04" //format of datetime in the csv files
 )
 
 type worker struct {
@@ -73,7 +72,7 @@ type scheduledWorker struct {
 	longitude               float64
 	fitness                 float32
 	valueDelay              float32
-	valueDistance           float32
+	valueDriving            float32
 	valueProjectFamiliarity float32
 	// valueTrades             float32
 	valueDemand float32
@@ -361,7 +360,7 @@ func resetIndividual(individual individual) individual {
 		individual.workers[i].fitness = 0
 		individual.workers[i].valueDelay = 0
 		individual.workers[i].valueDemand = 0
-		individual.workers[i].valueDistance = 0
+		individual.workers[i].valueDriving = 0
 		individual.workers[i].valueProjectFamiliarity = 0
 	}
 	return individual
@@ -392,13 +391,13 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID]
 
 		//Shorter distance => higher number => better fit
-		valueDistance := location.CalcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+		valueDriving := location.CalcDrivingTime(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 		//logger.Debug(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 
-		if valueDistance == 0 {
-			valueDistance = maxValueDistance
+		if valueDriving == 0 {
+			valueDriving = maxvalueDriving
 		} else {
-			valueDistance = 1 / valueDistance
+			valueDriving = 1 / valueDriving
 		}
 
 		//Fewer tasks can be done by worker => higher number => better fit
@@ -420,16 +419,16 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 			   			}
 			   		}
 		*/
-		workers[i].valueDistance = valueDistance
+		workers[i].valueDriving = valueDriving
 		workers[i].valueProjectFamiliarity = valueProjectFamiliarity
 		workers[i].valueDemand = valueDemand
 		workers[i].valueDelay = valueDelay
 		//v.valueTrades = valueTrades //TRADES IMPLEMENTATION
 
-		//logger.Debug("Values=", workers[i].workerID, valueDelay, valueProjectFamiliarity, valueDistance, valueDemand)
+		//logger.Debug("Values=", workers[i].workerID, valueDelay, valueProjectFamiliarity, valueDriving, valueDemand)
 		//Calculate AHP fitness for the worker, higher number => better fit
-		workers[i].fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance + valueDemand*weightDemand
-		//logger.Debug("Normalized=", workers[i].workerID, valueDelay*weightDelay, valueProjectFamiliarity*weightProjectFamiliarity, valueDistance*weightDistance, valueDemand*weightDemand, workers[i].fitness)
+		workers[i].fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDriving*weightDistance + valueDemand*weightDemand
+		//logger.Debug("Normalized=", workers[i].workerID, valueDelay*weightDelay, valueProjectFamiliarity*weightProjectFamiliarity, valueDriving*weightDistance, valueDemand*weightDemand, workers[i].fitness)
 		//logger.Debugf("%v=%v", v.workerID, workers[i].fitness)
 		// + valueTrades*weightTrades //TRADES IMPLEMENTATION
 	}
@@ -455,16 +454,16 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 			//startTime should be the earliest of all workers working on the task
 			if task.startTime == -1 {
 				//Task was never scheduled and task has no predecessors
-				task.startTime = workers[i].canStartIn + drivingSpeed/workers[i].valueDistance
-			} else if task.stopTime == 0 && task.startTime < workers[i].canStartIn+drivingSpeed/workers[i].valueDistance {
+				task.startTime = workers[i].canStartIn + 1/workers[i].valueDriving
+			} else if task.stopTime == 0 && task.startTime < workers[i].canStartIn+1/workers[i].valueDriving {
 				//Task was never scheduled, but start time defined by predecessors
-				task.startTime = workers[i].canStartIn + drivingSpeed/workers[i].valueDistance
+				task.startTime = workers[i].canStartIn + 1/workers[i].valueDriving
 			}
 
 			//logger.Debug(task)
 			//Extend stop time if current worker can't finish in time
-			if workers[i].canStartIn+drivingSpeed/workers[i].valueDistance+tasksDB[task.taskID].duration > task.stopTime {
-				task.stopTime = workers[i].canStartIn + drivingSpeed/workers[i].valueDistance + tasksDB[task.taskID].duration
+			if workers[i].canStartIn+1/workers[i].valueDriving+tasksDB[task.taskID].duration > task.stopTime {
+				task.stopTime = workers[i].canStartIn + 1/workers[i].valueDriving + tasksDB[task.taskID].duration
 			}
 			//logger.Debug(task)
 			//Change worker's next start time
@@ -501,11 +500,11 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID]
 
 		//Shorter distance => higher number => better fit
-		valueDistance := calcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
-		if valueDistance == 0 {
-			valueDistance = maxValueDistance
+		valueDriving := calcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+		if valueDriving == 0 {
+			valueDriving = maxvalueDriving
 		} else {
-			valueDistance = 1 / valueDistance
+			valueDriving = 1 / valueDriving
 		}
 
 		 		//Fewer trades => higher number => better fit
@@ -518,12 +517,12 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 		   			}
 		   		}
 
-		v.valueDistance = valueDistance
+		v.valueDriving = valueDriving
 		v.valueProjectFamiliarity = valueProjectFamiliarity
 		//		v.valueTrades = valueTrades
 		v.valueDelay = valueDelay
 		//Calculate AHP fitness for the worker, higher number => better fit
-		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDistance*weightDistance // + valueTrades*weightTrades
+		v.fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDriving*weightDistance // + valueTrades*weightTrades
 	}
 
 }
@@ -544,7 +543,7 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 		if v.valueTrades != 0 {
 			task.assignees = append(task.assignees, workers[i].workerID)
 			//TODO: Replace with proper calculation and GMaps API
-			task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDistance
+			task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDriving
 
 			//Keep stop time intact for the multiple trades with different availability
 			if task.stopTime-task.startTime < tasksDB[task.taskID].duration {

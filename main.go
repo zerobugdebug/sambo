@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/withmandala/go-log"
+	"gitlab.com/alex.skylight/sambo/calendar"
 	"gitlab.com/alex.skylight/sambo/location"
 )
 
@@ -449,8 +450,7 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 		//Check if workerID exists in the validWorkers map in taskDB
 		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
 			task.assignees = append(task.assignees, worker.workerID)
-			//logger.Debugf("Can be assigned, worker:%v", worker)
-			//TODO: Replace with proper calculation and GMaps API
+			logger.Debugf("Can be assigned, worker:%v", worker)
 			//startTime should be the earliest of all workers working on the task
 			if task.startTime == -1 {
 				//Task was never scheduled and task has no predecessors
@@ -919,6 +919,9 @@ func prettyPrintTask(task scheduledTask) {
 }
 
 func main() {
+
+	var workingTime calendar.WorkingTime
+	logger.Info("Working time = ", workingTime)
 
 	var population []individual
 	rand.Seed(time.Now().UnixNano())

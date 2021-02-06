@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/csv"
-	"fmt"
 	"io"
 	"math"
 	"math/rand"
@@ -103,6 +102,8 @@ type task struct {
 	idealWorkerCount int
 	minWorkerCount   int
 	maxWorkerCount   int
+	pinnedDateTime   time.Time
+	pinnedWorkerIDs  map[string]struct{}
 }
 
 type scheduledTask struct {
@@ -121,22 +122,6 @@ var projectsDB map[string]project                      //key is the project ID
 var projectFamiliarityDB map[string]map[string]float32 //key1 is the project ID, key2 is the worker ID
 
 var logger = log.New(os.Stdout).WithoutDebug().WithColor()
-
-func (task task) print() {
-	fmt.Printf("%+v\n", task)
-}
-
-func (task scheduledTask) print() {
-	fmt.Printf("%+v\n", task)
-}
-
-func (worker scheduledWorker) print() {
-	fmt.Printf("%+v\n", worker)
-}
-
-func (individual individual) print() {
-	fmt.Printf("%+v\n", individual)
-}
 
 func readProjectInfoCSV() map[string]project {
 	var projectTemp project
@@ -200,13 +185,18 @@ func readTaskInfoCSV() map[string]task {
 		}
 		taskTemp.project = tasksRecord[0]
 		taskTemp.name = tasksRecord[2]
+
 		taskTemp.validWorkers = make(map[string]struct{})
 		for _, v := range strings.Fields(tasksRecord[3]) {
 			taskTemp.validWorkers[v] = struct{}{}
 		}
-		taskTemp.idealWorkerCount, err = strconv.Atoi(tasksRecord[5])
 
-		strings.Fields(tasksRecord[3])
+		taskTemp.idealWorkerCount, err = strconv.Atoi(tasksRecord[5])
+		if err != nil {
+			logger.Error("Original record: ", tasksRecord)
+			logger.Fatal("Couldn't parse ideal worker count", err)
+		}
+
 		taskTemp.prerequisites = make(map[string]float32)
 		prerequisitesTemp := strings.Fields(tasksRecord[4])
 		lagHoursTemp := strings.Fields(tasksRecord[9])
@@ -218,12 +208,27 @@ func readTaskInfoCSV() map[string]task {
 			}
 			taskTemp.prerequisites[taskTemp.project+"."+v] = float32(lagHours)
 		}
+
 		tempDuration, err := strconv.ParseFloat(tasksRecord[8], 32)
 		if err != nil {
 			logger.Error("Original record: ", tasksRecord)
 			logger.Fatal("Couldn't parse task duration value", err)
 		}
 		taskTemp.duration = float32(tempDuration)
+
+		if tasksRecord[10] != "" {
+			taskTemp.pinnedDateTime, err = time.Parse(defaultDateTimeFormat, tasksRecord[10])
+			if err != nil {
+				logger.Error("Original record: ", tasksRecord)
+				logger.Fatal("Couldn't parse task pinned datetime value", err)
+			}
+		}
+
+		taskTemp.pinnedWorkerIDs = make(map[string]struct{})
+		for _, v := range strings.Fields(tasksRecord[11]) {
+			taskTemp.pinnedWorkerIDs[v] = struct{}{}
+		}
+
 		tasksDB[taskTemp.project+"."+tasksRecord[1]] = taskTemp
 	}
 	return tasksDB
@@ -281,7 +286,8 @@ func readWorkerProjectHoursCSV() map[string]map[string]float32 {
 		}
 		workerProjectHours, err := strconv.ParseFloat(projectFamiliarityRecord[2], 64)
 		if err != nil {
-			logger.Warn("Couldn't parse worker project hours", err)
+			logger.Error("Original record: ", projectFamiliarityRecord)
+			logger.Fatal("Couldn't parse worker hours value", err)
 		}
 		if _, ok := projectFamiliarityDB[projectFamiliarityRecord[1]]; !ok {
 			projectFamiliarityDB[projectFamiliarityRecord[1]] = make(map[string]float32)

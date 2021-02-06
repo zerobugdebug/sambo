@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/withmandala/go-log"
-	"gitlab.com/alex.skylight/sambo/helpers"
+	"gitlab.com/alex.skylight/sambo/location"
 )
 
 const (
@@ -392,7 +392,7 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 		valueProjectFamiliarity := projectFamiliarityDB[tasksDB[task.taskID].project][v.workerID]
 
 		//Shorter distance => higher number => better fit
-		valueDistance := helpers.CalcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
+		valueDistance := location.CalcDistance(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 		//logger.Debug(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 
 		if valueDistance == 0 {

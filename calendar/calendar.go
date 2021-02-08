@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const timeRoundingSeconds float32 = 600
+
 //WorkingTime is a time limited to the working hours
 type WorkingTime time.Time
 
@@ -53,6 +55,9 @@ func (site site) AddHours(startTime time.Time, hours float32) time.Time {
 	remainingSeconds := 3600 * (float64(hours) - float64(totalDays-1)*workingHoursPerDay - todayEndTime.Sub(startTime).Hours())
 	//Shift endTime to the correct hours
 	endTime = endTime.Add(time.Duration(remainingSeconds) * time.Second)
+
+	//Round to timeRounding minutes
+	endTime = endTime.Round(time.Duration(timeRoundingSeconds) * time.Second)
 
 	return endTime
 }

@@ -68,7 +68,7 @@ type worker struct {
 
 type scheduledWorker struct {
 	workerID                string
-	canStartIn              float32
+	canStartIn              time.Time
 	latitude                float64
 	longitude               float64
 	fitness                 float32
@@ -85,8 +85,7 @@ type project struct {
 	longitude       float64
 	targetStartDate time.Time
 	targetEndDate   time.Time
-	dailyStartTime  time.Time
-	dailyEndTime    time.Time
+	site            calendar.Site
 }
 
 type individual struct {
@@ -109,8 +108,8 @@ type task struct {
 
 type scheduledTask struct {
 	taskID           string
-	startTime        float32
-	stopTime         float32
+	startTime        time.Time
+	stopTime         time.Time
 	assignees        []string
 	numPrerequisites int
 }
@@ -122,6 +121,7 @@ var workersDB map[string]worker                        //key is the worker ID
 var projectsDB map[string]project                      //key is the project ID
 var projectFamiliarityDB map[string]map[string]float32 //key1 is the project ID, key2 is the worker ID
 
+var scheduleStartTime time.Time
 var logger = log.New(os.Stdout).WithoutDebug().WithColor()
 
 func readProjectInfoCSV() map[string]project {
@@ -152,12 +152,12 @@ func readProjectInfoCSV() map[string]project {
 			logger.Error("Original record: ", projectsRecord)
 			logger.Fatal("Couldn't parse project longitude value", err)
 		}
-		projectTemp.targetStartDate, err = time.Parse(defaultDateFormat, projectsRecord[5])
+		projectTemp.site.DailyStartTime, err = time.Parse(defaultDateFormat, projectsRecord[5])
 		if err != nil {
 			logger.Error("Original record: ", projectsRecord)
 			logger.Fatal("Couldn't parse project target start date value", err)
 		}
-		projectTemp.targetEndDate, err = time.Parse(defaultDateFormat, projectsRecord[6])
+		projectTemp.site.DailyEndTime, err = time.Parse(defaultDateFormat, projectsRecord[6])
 		if err != nil {
 			logger.Error("Original record: ", projectsRecord)
 			logger.Fatal("Couldn't parse project target end date value", err)
@@ -325,7 +325,7 @@ func generateIndividual() individual {
 	i := 0
 	for k, v := range tasksDB {
 		newIndividual.tasks[taskOrder[i]].taskID = k
-		newIndividual.tasks[taskOrder[i]].startTime = -1
+		newIndividual.tasks[taskOrder[i]].startTime = time.Time{}
 		newIndividual.tasks[taskOrder[i]].assignees = make([]string, 0)
 		newIndividual.tasks[taskOrder[i]].numPrerequisites = len(v.prerequisites)
 		i++
@@ -335,7 +335,7 @@ func generateIndividual() individual {
 	newIndividual.workers = make([]scheduledWorker, len(workersDB))
 	for k, v := range workersDB {
 		newIndividual.workers[i].workerID = k
-		newIndividual.workers[i].canStartIn = 0
+		newIndividual.workers[i].canStartIn = time.Time{}
 		newIndividual.workers[i].latitude = v.latitude
 		newIndividual.workers[i].longitude = v.longitude
 		newIndividual.workers[i].fitness = 0
@@ -348,14 +348,14 @@ func generateIndividual() individual {
 //Reset individual state
 func resetIndividual(individual individual) individual {
 	for i, v := range individual.tasks {
-		individual.tasks[i].startTime = -1
-		individual.tasks[i].stopTime = 0
+		individual.tasks[i].startTime = time.Time{}
+		individual.tasks[i].stopTime = time.Time{}
 		individual.tasks[i].assignees = make([]string, 0)
 		individual.tasks[i].numPrerequisites = len(tasksDB[v.taskID].prerequisites)
 	}
 
 	for i, v := range individual.workers {
-		individual.workers[i].canStartIn = 0
+		individual.workers[i].canStartIn = time.Time{}
 		individual.workers[i].latitude = workersDB[v.workerID].latitude
 		individual.workers[i].longitude = workersDB[v.workerID].longitude
 		individual.workers[i].fitness = 0
@@ -381,11 +381,12 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 	for i, v := range workers {
 
 		//Smaller wait time => higher number => better fit
-		valueDelay := v.canStartIn
-		if valueDelay == 0 {
+		//valueDelay := v.canStartIn.Sub
+		var valueDelay float32
+		if v.canStartIn.IsZero() {
 			valueDelay = maxValueDelay
 		} else {
-			valueDelay = 1 / valueDelay
+			valueDelay = float32(1 / v.canStartIn.Sub(scheduleStartTime).Hours())
 		}
 
 		//More hours in project => higher number => better fit
@@ -451,19 +452,21 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
 			task.assignees = append(task.assignees, worker.workerID)
 			logger.Debugf("Can be assigned, worker:%v", worker)
+			newStartTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(workers[i].canStartIn, 1/workers[i].valueDriving)
 			//startTime should be the earliest of all workers working on the task
-			if task.startTime == -1 {
+			if task.startTime.IsZero() {
 				//Task was never scheduled and task has no predecessors
-				task.startTime = workers[i].canStartIn + 1/workers[i].valueDriving
-			} else if task.stopTime == 0 && task.startTime < workers[i].canStartIn+1/workers[i].valueDriving {
+				task.startTime = newStartTime
+			} else if task.stopTime.IsZero() && task.startTime.Before(newStartTime) {
 				//Task was never scheduled, but start time defined by predecessors
-				task.startTime = workers[i].canStartIn + 1/workers[i].valueDriving
+				task.startTime = newStartTime
 			}
 
 			//logger.Debug(task)
+			newStopTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(newStartTime, tasksDB[task.taskID].duration)
 			//Extend stop time if current worker can't finish in time
-			if workers[i].canStartIn+1/workers[i].valueDriving+tasksDB[task.taskID].duration > task.stopTime {
-				task.stopTime = workers[i].canStartIn + 1/workers[i].valueDriving + tasksDB[task.taskID].duration
+			if task.stopTime.Before(newStopTime) {
+				task.stopTime = newStopTime
 			}
 			//logger.Debug(task)
 			//Change worker's next start time
@@ -808,8 +811,9 @@ func generateIndividualSchedule(individual individual) individual {
 								//Remove this task from prerequisites for all other tasks
 								individual.tasks[i].numPrerequisites--
 								//Update task.startTime to match predecessor stop time and account for lag/lead hours
-								if individual.tasks[i].startTime < prerequisiteTask.stopTime+tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID] {
-									individual.tasks[i].startTime = prerequisiteTask.stopTime + tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID]
+								newStopTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(prerequisiteTask.stopTime, tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID])
+								if individual.tasks[i].startTime.Before(newStopTime) {
+									individual.tasks[i].startTime = newStopTime
 								}
 
 							}
@@ -829,8 +833,8 @@ func generateIndividualSchedule(individual individual) individual {
 			break
 		}
 		//Earlier stopTime => faster we finish all the tasks => better individual fitness
-		if individual.fitness < task.stopTime {
-			individual.fitness = task.stopTime
+		if individual.fitness < float32(task.stopTime.Sub(scheduleStartTime).Hours()) {
+			individual.fitness = float32(task.stopTime.Sub(scheduleStartTime).Hours())
 		}
 	}
 	return individual
@@ -897,12 +901,12 @@ func prettyPrintTask(task scheduledTask) {
 	id := strings.Split(task.taskID, ".")[1]
 	projectID := tasksDB[task.taskID].project
 	projectName := projectsDB[tasksDB[task.taskID].project].name
-	currentTime := time.Now()
-	originDateTime := time.Date(currentTime.Year(), currentTime.Month(), currentTime.Day()+1, 8, 30, 0, 0, currentTime.Location())
-	startWorkingMinutes := math.Floor(float64(task.startTime)/8)*1440 + math.Mod(float64(task.startTime), 8)*60
-	stopWorkingMinutes := math.Floor(float64(task.stopTime)/8)*1440 + math.Mod(float64(task.stopTime), 8)*60
-	startDateTime := originDateTime.Add(time.Duration(startWorkingMinutes) * time.Minute)
-	stopDateTime := originDateTime.Add(time.Duration(stopWorkingMinutes) * time.Minute)
+	//currentTime := time.Now()
+	//originDateTime := time.Date(currentTime.Year(), currentTime.Month(), currentTime.Day()+1, 8, 30, 0, 0, currentTime.Location())
+	//startWorkingMinutes := math.Floor(float64(task.startTime)/8)*1440 + math.Mod(float64(task.startTime), 8)*60
+	//stopWorkingMinutes := math.Floor(float64(task.stopTime)/8)*1440 + math.Mod(float64(task.stopTime), 8)*60
+	startDateTime := task.startTime
+	stopDateTime := task.stopTime
 	workersIDs := strings.Join(task.assignees, ",")
 	var predecessors []string
 	var workers []string
@@ -920,11 +924,11 @@ func prettyPrintTask(task scheduledTask) {
 
 func main() {
 
-	var workingTime calendar.WorkingTime
-	logger.Info("Working time = ", workingTime)
-
 	var population []individual
 	rand.Seed(time.Now().UnixNano())
+
+	currentTime := time.Now()
+	scheduleStartTime = time.Date(currentTime.Year(), currentTime.Month(), currentTime.Day()+1, 0, 0, 0, 0, currentTime.Location())
 
 	//projectsDB = make(map[string]project)
 	//projectsDB, projectFamiliarityDB, tasksDB, workersDB, workersTimeOffDB = readCSVs()

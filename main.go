@@ -27,16 +27,16 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize         int     = 1000 //size of the population
+	populationSize         int     = 5000 //size of the population
 	generationsLimit       int     = 10   //how many generations to generate
 	crossoverRate          float32 = 1    //how often to do crossover 0%-100% in decimal
 	mutationRate           float32 = 1    //how often to do mutation 0%-100% in decimal
 	elitismRate            float32 = 0.01 //how many of the best indviduals to keep intact
 	deadend                float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
-	tourneySampleSize      int     = 50   //sample size for the tournament selection, should be less than population size-number of elites
+	tourneySampleSize      int     = 20   //sample size for the tournament selection, should be less than population size-number of elites
 	crossoverParentsNumber int     = 2    //number of parents for the crossover
-	maxCrossoverLength     int     = 50   //max number of sequential tasks to cross between individuals
-	maxMutatedGenes        int     = 50   //maximum number of mutated genes, min=2
+	maxCrossoverLength     int     = 10   //max number of sequential tasks to cross between individuals
+	maxMutatedGenes        int     = 10   //maximum number of mutated genes, min=2
 	mutationTypePreference float32 = 0    //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
@@ -49,7 +49,7 @@ const (
 	maxvalueDriving          float32 = 1000
 	maxValueDelay            float32 = 1000
 	maxValueDemand           float32 = 1
-	pinnedDateTimeSnap       float32 = 4
+	pinnedDateTimeSnap       float32 = 32
 	//weightTrades             float32 = 1 //for the trades implementation
 
 )
@@ -59,6 +59,7 @@ const (
 	defaultDateFormat     string = "2006-01-02"       //format of date in the csv files
 	defaultTimeFormat     string = "15:04"            //format of time in the csv files
 	defaultDateTimeFormat string = "2006-01-02T15:04" //format of datetime in the csv files
+	threadsNum            int    = 256                //number of go routines to run simultaneously
 )
 
 type worker struct {
@@ -867,94 +868,133 @@ func generatePopulationSchedules(population []individual) {
 	//TODO: Slice will be modified in place, need to check
 	//Number of elites
 	elitesNum := int(elitismRate * float32(len(population)))
+
+	chanIndividualIn := make(chan individual)
+	chanIndividualOut := make(chan individual)
+	//Start go subroutines to handle the calculation
+	for i := 0; i < threadsNum; i++ {
+		go generateIndividualSchedule(chanIndividualIn, chanIndividualOut)
+	}
+
 	//Recalculate elites if they are not calculated
 	if population[0].fitness == 0 {
 		for i := range population[:elitesNum] {
 			//logger.Info("Generating N=", i)\
-			population[i] = generateIndividualSchedule(population[i])
+			chanIndividualIn <- population[i]
+			population[i] = <-chanIndividualOut
 		}
 	}
 
 	//Recalculate everyone else
-	for i := range population[elitesNum:] {
-		//logger.Info("Generating N=", elitesNum+i)
-		population[elitesNum+i] = generateIndividualSchedule(population[elitesNum+i])
+	j := elitesNum
+	remainingThreads := 0
+	for j < populationSize-1 {
+		remainingThreads = populationSize - j - 1
+		if remainingThreads > threadsNum {
+			remainingThreads = threadsNum
+		}
+		for i := 0; i < remainingThreads; i++ {
+			//Push data to the subroutines
+			//logger.Info("Pushing data to subroutines")
+			//logger.Info("j+i=", j+i)
+			chanIndividualIn <- population[j+i]
+			//logger.Info("Pushed data to subroutines")
+		}
+		for i := 0; i < remainingThreads; i++ {
+			//logger.Info("Waiting for results ")
+			population[j+i] = <-chanIndividualOut
+			//logger.Info("Got result: ", population[j].fitness)
+		}
+		j += remainingThreads
+		logger.Infof("%v individuals completed", j+1)
+
 	}
+	close(chanIndividualIn)
+	close(chanIndividualOut)
 }
 
-//Generate individual schedule and calculate fitness
-func generateIndividualSchedule(individual individual) individual {
-	individual = resetIndividual(individual)
-	var workerAssigned bool = true
-	//Infinite loop until no workers can be assigned
-	logger.Debug("Infinite loop until no workers can be assigned")
-	for condition := true; condition; condition = workerAssigned {
-		//Prevent loops if no tasks left to process
-		workerAssigned = false
-		//Loop across all tasks
-		for i, task := range individual.tasks {
-			logger.Debug("Processing taskID =", task.taskID)
-			//Process only tasks with remaining worker slots and with all the dependencies met
-			if len(task.assignees) < tasksDB[task.taskID].idealWorkerCount && task.numPrerequisites == 0 {
-				//Assign workers to the task until idealWorkerCount
-				for j := len(individual.tasks[i].assignees); j < tasksDB[task.taskID].idealWorkerCount; j++ {
-					//logger.Debug("worker j =", j)
-					//Calculate fitness of idealWorkerCount workers for specific task
-					//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
-					calculateWorkersFitness(task, individual.workers)
-					//logger.Debug(task)
-					//Try to assign worker to task and update worker data
-					//TODO: Multiple bool assignments. Any way to make it better?
-					individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
-					//logger.Debug(individual.tasks[i])
-				}
-				//Modify dependant tasks if idealWorkerCount workers are scheduled
-				if len(individual.tasks[i].assignees) == tasksDB[task.taskID].idealWorkerCount {
-					prerequisiteTask := individual.tasks[i]
-					//Loop over all tasks
-					for i, task := range individual.tasks {
-						if task.numPrerequisites > 0 {
-							//Check if prerequisiteTask.taskID exists in the prerequisites map in tasksDB
-							if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID]; ok {
-								//Remove this task from prerequisites for all other tasks
-								individual.tasks[i].numPrerequisites--
-								//Update task.startTime to match predecessor stop time and account for lag/lead hours
-								newStopTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(prerequisiteTask.stopTime, tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID])
-								if individual.tasks[i].startTime.Before(newStopTime) {
-									individual.tasks[i].startTime = newStopTime
+//Generate individual schedule and calculate fitness subroutine
+func generateIndividualSchedule(chanIndividualIn, chanIndividualOut chan individual) {
+	//logger.Info("Subroutine started")
+	for {
+		individual, ok := <-chanIndividualIn
+		//logger.Info("Got individual: ", individual.fitness)
+		if ok == false {
+			//logger.Info("Subroutine stopped")
+			break
+		}
+		individual = resetIndividual(individual)
+		var workerAssigned bool = true
+		//Infinite loop until no workers can be assigned
+		logger.Debug("Infinite loop until no workers can be assigned")
+		for condition := true; condition; condition = workerAssigned {
+			//Prevent loops if no tasks left to process
+			workerAssigned = false
+			//Loop across all tasks
+			for i, task := range individual.tasks {
+				logger.Debug("Processing taskID =", task.taskID)
+				//Process only tasks with remaining worker slots and with all the dependencies met
+				if len(task.assignees) < tasksDB[task.taskID].idealWorkerCount && task.numPrerequisites == 0 {
+					//Assign workers to the task until idealWorkerCount
+					for j := len(individual.tasks[i].assignees); j < tasksDB[task.taskID].idealWorkerCount; j++ {
+						//logger.Debug("worker j =", j)
+						//Calculate fitness of idealWorkerCount workers for specific task
+						//TODO: Add "taint" flag to worker to prevent recalculation of fitness for untouched workers
+						calculateWorkersFitness(task, individual.workers)
+						//logger.Debug(task)
+						//Try to assign worker to task and update worker data
+						//TODO: Multiple bool assignments. Any way to make it better?
+						individual.tasks[i], workerAssigned = assignBestWorker(task, individual.workers)
+						//logger.Debug(individual.tasks[i])
+					}
+					//Modify dependant tasks if idealWorkerCount workers are scheduled
+					if len(individual.tasks[i].assignees) == tasksDB[task.taskID].idealWorkerCount {
+						prerequisiteTask := individual.tasks[i]
+						//Loop over all tasks
+						for i, task := range individual.tasks {
+							if task.numPrerequisites > 0 {
+								//Check if prerequisiteTask.taskID exists in the prerequisites map in tasksDB
+								if _, ok := tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID]; ok {
+									//Remove this task from prerequisites for all other tasks
+									individual.tasks[i].numPrerequisites--
+									//Update task.startTime to match predecessor stop time and account for lag/lead hours
+									newStopTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(prerequisiteTask.stopTime, tasksDB[task.taskID].prerequisites[prerequisiteTask.taskID])
+									if individual.tasks[i].startTime.Before(newStopTime) {
+										individual.tasks[i].startTime = newStopTime
+									}
+
 								}
 
 							}
 
 						}
-
 					}
 				}
 			}
 		}
-	}
 
-	//Default to best individual
-	individual.fitness = 0
-	var unscheduledTasksNumber float32 = 0
-	for _, task := range individual.tasks {
-		//If we have tasks/trades with no workers assigned, the individual is a dead end
-		if len(task.assignees) != tasksDB[task.taskID].idealWorkerCount {
-			//Individual has unscheduled tasks. Fewer unscheduled tasks => better individual fitness
-			logger.Debug("Can't schedule: ", task)
-			unscheduledTasksNumber++
+		//Default to best individual
+		individual.fitness = 0
+		var unscheduledTasksNumber float32 = 0
+		for _, task := range individual.tasks {
+			//If we have tasks/trades with no workers assigned, the individual is a dead end
+			if len(task.assignees) != tasksDB[task.taskID].idealWorkerCount {
+				//Individual has unscheduled tasks. Fewer unscheduled tasks => better individual fitness
+				logger.Debug("Can't schedule: ", task)
+				unscheduledTasksNumber++
+			}
+			//Earlier stopTime => faster we finish all the tasks => better individual fitness
+			if individual.fitness < float32(task.stopTime.Sub(scheduleStartTime).Hours()) {
+				individual.fitness = float32(task.stopTime.Sub(scheduleStartTime).Hours())
+			}
 		}
-		//Earlier stopTime => faster we finish all the tasks => better individual fitness
-		if individual.fitness < float32(task.stopTime.Sub(scheduleStartTime).Hours()) {
-			individual.fitness = float32(task.stopTime.Sub(scheduleStartTime).Hours())
+		if unscheduledTasksNumber > 0 {
+			individual.fitness = deadend + unscheduledTasksNumber
 		}
+		//logger.Info("Sending individual: ", individual.fitness)
+		chanIndividualOut <- individual
+		//logger.Info("Individual sent: ", individual.fitness)
 	}
-	if unscheduledTasksNumber > 0 {
-		individual.fitness = deadend + unscheduledTasksNumber
-	}
-
-	return individual
-
 }
 
 /*
@@ -1037,7 +1077,7 @@ func prettyPrintTask(task scheduledTask) {
 	for k := range tasksDB[task.taskID].pinnedWorkerIDs {
 		pinnedWorkers = append(pinnedWorkers, workersDB[k].name)
 	}
-	pinnedWorkersNames := strings.Join(workers, ",")
+	pinnedWorkersNames := strings.Join(pinnedWorkers, ",")
 	if !tasksDB[task.taskID].pinnedDateTime.IsZero() {
 		pinnedDateTime = tasksDB[task.taskID].pinnedDateTime.Format("2006/01/02 15:04")
 	}

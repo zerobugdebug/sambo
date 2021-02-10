@@ -28,16 +28,16 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize         int     = 100   //size of the population
-	generationsLimit       int     = 100   //how many generations to generate
+	populationSize         int     = 1000  //size of the population
+	generationsLimit       int     = 10    //how many generations to generate
 	crossoverRate          float32 = 1     //how often to do crossover 0%-100% in decimal
 	mutationRate           float32 = 1     //how often to do mutation 0%-100% in decimal
-	elitismRate            float32 = 0.05  //how many of the best indviduals to keep intact
+	elitismRate            float32 = 0.001 //how many of the best indviduals to keep intact
 	deadend                float32 = 10000 //round number to split between unscheduled tasks and real hours to complete
-	tourneySampleSize      int     = 10    //sample size for the tournament selection, should be less than population size-number of elites
+	tourneySampleSize      int     = 50    //sample size for the tournament selection, should be less than population size-number of elites
 	crossoverParentsNumber int     = 2     //number of parents for the crossover
-	maxCrossoverLength     int     = 10    //max number of sequential tasks to cross between individuals
-	maxMutatedGenes        int     = 10    //maximum number of mutated genes, min=2
+	maxCrossoverLength     int     = 50    //max number of sequential tasks to cross between individuals
+	maxMutatedGenes        int     = 50    //maximum number of mutated genes, min=2
 	mutationTypePreference float32 = 0     //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
@@ -50,7 +50,7 @@ const (
 	maxvalueDriving          float32 = 1000
 	maxValueDelay            float32 = 1000
 	maxValueDemand           float32 = 1
-	pinnedDateTimeSnap       float32 = 16
+	pinnedDateTimeSnap       float32 = 32
 	//weightTrades             float32 = 1 //for the trades implementation
 
 )
@@ -93,10 +93,14 @@ type project struct {
 }
 
 type individual struct {
-	tasks     []scheduledTask
-	workers   []scheduledWorker
-	fitness   float32
-	tasksHash uint64
+	tasks   []scheduledTask
+	workers []scheduledWorker
+	fitness float32
+}
+
+type population struct {
+	individuals []individual
+	hashes      map[uint64]int
 }
 type task struct {
 	name             string
@@ -391,13 +395,27 @@ func calcTasksHash(tasks []scheduledTask) uint64 {
 	for _, v := range tasks {
 		allTasks = append(allTasks, v.taskID)
 	}
-	logger.Info("allTasks=", allTasks)
 	//Convert slice into string representation
 	allTasksString := strings.Join(allTasks, ",")
+	logger.Debug("allTasksString=", allTasksString)
 	//Calculate hash
 	hashAlg := fnv.New64a()
 	hashAlg.Write([]byte(allTasksString))
 	return hashAlg.Sum64()
+}
+
+//Calculate hash for the individual
+func calcIndividualHash(individual individual) uint64 {
+	return calcTasksHash(individual.tasks)
+}
+
+//Calculate hash for the individuals
+func calcIndividualsHash(individuals []individual) map[uint64]int {
+	hashMap := make(map[uint64]int)
+	for i, v := range individuals {
+		hashMap[calcIndividualHash(v)] = i
+	}
+	return hashMap
 }
 
 //Generate individual by randomizing the taskDB
@@ -455,11 +473,10 @@ func resetIndividual(individual individual) individual {
 	return individual
 }
 
-func generatePopulation() []individual {
-	var population []individual
+func generatePopulation() population {
+	var population population
 	for i := 0; i < populationSize; i++ {
-		individual := generateIndividual()
-		population = append(population, individual)
+		population.individuals = append(population.individuals, generateIndividual())
 	}
 	return population
 }
@@ -698,51 +715,66 @@ func copyIndividual(oldIndividual individual) individual {
 	return newIndividual
 }
 
-func copyPopulation(oldPopulation []individual) []individual {
-	var newPopulation []individual
-	for _, v := range oldPopulation {
-		newPopulation = append(newPopulation, copyIndividual(v))
+func copyIndividuals(oldIndividuals []individual) []individual {
+	var newIndividuals []individual
+	for _, v := range oldIndividuals {
+		newIndividuals = append(newIndividuals, copyIndividual(v))
 	}
-	return newPopulation
+	return newIndividuals
 }
 
 //Apply crossovers and mutations on non-elite individuals
-func transmogrifyPopulation(population []individual) []individual {
-	elitesNum := int(elitismRate * float32(len(population)))
+func transmogrifyPopulation(pop population) population {
+	elitesNum := int(elitismRate * float32(len(pop.individuals)))
 	//logger.Info("elitesNum=", elitesNum)
-	var newPopulation []individual
-	var tempPopulation []individual
+	var newPopulation population
+	var tempIndividuals []individual
 	//Keep elites in the new population
 	//	newPopulation = population[:elitesNum]
 	//logger.Info("OldElite=", population[0])
-	newPopulation = copyPopulation(population[:elitesNum])
+	newPopulation.individuals = copyIndividuals(pop.individuals[:elitesNum])
+	//Recalculate hash for the elites
+	newPopulation.hashes = calcIndividualsHash(newPopulation.individuals)
 	//logger.Info("NewElite=", newPopulation[0])
-	logger.Debug("newPopulation size with elites =", len(newPopulation))
-	logger.Debug("Best elite fitness =", newPopulation[0].fitness)
+	logger.Debug("newPopulation size with elites =", len(newPopulation.individuals))
+	logger.Debug("Best elite fitness =", newPopulation.individuals[0].fitness)
 	//loggerFile.Info("ELITES:", newPopulation[0].tasks)
-	remainingIndividualsNumber := len(population) - elitesNum
+	remainingIndividualsNumber := len(pop.individuals) - elitesNum
 	logger.Debug("remainingIndividualsNumber =", remainingIndividualsNumber)
 	//Generate len(population)-elitesNum additonal individuals
 	for condition := true; condition; condition = remainingIndividualsNumber > 0 {
-		tempPopulation = make([]individual, crossoverParentsNumber)
-		//Select crossoverParentsNumber from the popualtion with Torunament Selection
-		tempPopulation = tourneySelect(population, crossoverParentsNumber)
-		logger.Debug("tempPopulation size after tourney =", len(tempPopulation))
+		tempIndividuals = make([]individual, crossoverParentsNumber)
+		//Select crossoverParentsNumber from the population with Torunament Selection
+		tempIndividuals = tourneySelect(pop.individuals, crossoverParentsNumber)
+		logger.Debug("tempPopulation size after tourney =", len(tempIndividuals))
 		//Apply crossover to the tempPopulation
-		tempPopulation = crossoverIndividuals(tempPopulation)
-		logger.Debug("tempPopulation size after crossover =", len(tempPopulation))
+		tempIndividuals = crossoverIndividuals(tempIndividuals)
+		logger.Debug("tempPopulation size after crossover =", len(tempIndividuals))
 		//Apply mutation to the tempPopulation
-		tempPopulation = mutateIndividuals(tempPopulation)
-		logger.Debug("tempPopulation size after mutation =", len(tempPopulation))
-		//Append tempPopulation to the new population
-		newPopulation = append(newPopulation, copyPopulation(tempPopulation)...)
-		logger.Debug("newPopulation size =", len(newPopulation))
+		tempIndividuals = mutateIndividuals(tempIndividuals)
+		logger.Debug("tempPopulation size after mutation =", len(tempIndividuals))
+		//Append tempPopulation to the new population, if indviduals are new
+		for _, v := range tempIndividuals {
+			tempHash := calcIndividualHash(v)
+			//If hash doesn't exist in the hashes map
+			if _, ok := newPopulation.hashes[tempHash]; !ok {
+				//Add hash with value of index of current individual
+				newPopulation.hashes[tempHash] = len(newPopulation.individuals)
+				//Add individual to the individuals slice
+				newPopulation.individuals = append(newPopulation.individuals, copyIndividual(v))
+				remainingIndividualsNumber--
+			}
+		}
+
+		logger.Debug("newPopulation size =", len(newPopulation.individuals))
 		//Update remaining number of individuals to generate
-		remainingIndividualsNumber -= crossoverParentsNumber
 		logger.Debug("remainingIndividualsNumber =", remainingIndividualsNumber)
 		logger.Debug("condition =", condition)
 	}
 
+	logger.Debug("newPopulation.hashes=", newPopulation.hashes)
+	//Cut extra individuals generated by mutation/crossover
+	newPopulation.individuals = newPopulation.individuals[:len(pop.individuals)]
 	return newPopulation
 }
 
@@ -828,7 +860,7 @@ func mutateIndividuals(individuals []individual) []individual {
 	//var crossoverStart, crossoverEnd, crossoverLen int
 	//Copy parent to child individuals slice
 	//mutatedIndividuals = make([]individual, len(individuals))
-	mutatedIndividuals = copyPopulation(individuals)
+	mutatedIndividuals = copyIndividuals(individuals)
 	for i := range mutatedIndividuals {
 		//Check if we need to mutate
 		if rand.Float32() < mutationRate {
@@ -849,7 +881,7 @@ func crossoverIndividuals(parentIndividuals []individual) []individual {
 	//var crossoverStart, crossoverEnd, crossoverLen int
 	//Copy parent to child individuals slice
 	//childIndividuals = make([]individual, len(parentIndividuals))
-	childIndividuals = copyPopulation(parentIndividuals)
+	childIndividuals = copyIndividuals(parentIndividuals)
 	//Check if we need to crossover
 	if rand.Float32() < crossoverRate {
 		crossoverStart := rand.Intn(len(childIndividuals[0].tasks))
@@ -1105,7 +1137,7 @@ func prettyPrintTask(task scheduledTask) {
 
 func main() {
 
-	var population []individual
+	var population population
 	rand.Seed(time.Now().UnixNano())
 
 	currentTime := time.Now()
@@ -1135,20 +1167,20 @@ func main() {
 		logger.Info("Generation", i)
 		//Mutate and crossover population
 		logger.Info("Mutating population...")
-		population = copyPopulation(transmogrifyPopulation(population))
+		population = transmogrifyPopulation(population)
 		//population = transmogrifyPopulation(population)
 		//Generate schedule and calculate fitness
 		logger.Info("Generating schedules...")
-		generatePopulationSchedules(population)
+		generatePopulationSchedules(population.individuals)
 		logger.Info("Sorting individuals...")
 		//Sort population in the fitness order
-		sortPopulation(population)
-		logger.Info("Best fitness =", population[0].fitness)
-		logger.Info("Second best fitness =", population[1].fitness)
-		logger.Info("Third best fitness =", population[2].fitness)
+		sortPopulation(population.individuals)
+		logger.Info("Best fitness =", population.individuals[0].fitness)
+		logger.Info("Second best fitness =", population.individuals[1].fitness)
+		logger.Info("Third best fitness =", population.individuals[2].fitness)
 	}
 	logger.Info("Best schedule")
-	for _, task := range population[0].tasks {
+	for _, task := range population.individuals[0].tasks {
 		prettyPrintTask(task)
 	}
 }

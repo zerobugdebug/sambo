@@ -38,7 +38,7 @@ const (
 	crossoverParentsNumber int     = 2     //number of parents for the crossover
 	maxCrossoverLength     int     = 50    //max number of sequential tasks to cross between individuals
 	maxMutatedGenes        int     = 50    //maximum number of mutated genes, min=2
-	mutationTypePreference float32 = 0     //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
+	mutationTypePreference float32 = 1     //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -835,7 +835,7 @@ func displacementMutation(individual individual) individual {
 		oldTaskID := individual.tasks[oldPosition].taskID
 		//Shift all taskIDs one task back
 		for j := range individual.tasks[oldPosition:newPosition] {
-			individual.tasks[j].taskID = individual.tasks[j+1].taskID
+			individual.tasks[oldPosition+j].taskID = individual.tasks[oldPosition+j+1].taskID
 		}
 		//Restore the original taskID to the newPosition
 		individual.tasks[newPosition].taskID = oldTaskID

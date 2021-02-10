@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"hash/fnv"
 	"io"
 	"math"
 	"math/rand"
@@ -92,9 +93,10 @@ type project struct {
 }
 
 type individual struct {
-	tasks   []scheduledTask
-	workers []scheduledWorker
-	fitness float32
+	tasks     []scheduledTask
+	workers   []scheduledWorker
+	fitness   float32
+	tasksHash uint64
 }
 type task struct {
 	name             string
@@ -380,6 +382,22 @@ func calculateWorkersDemand() map[string]worker {
 		workersDB[workerID] = worker
 	}
 	return workersDB
+}
+
+//Calculate FNV-1a-64 hash to compare the order of the tasks between 2 individuals
+func calcTasksHash(tasks []scheduledTask) uint64 {
+	var allTasks []string
+	//Gather all tasks into allTasks slice
+	for _, v := range tasks {
+		allTasks = append(allTasks, v.taskID)
+	}
+	logger.Info("allTasks=", allTasks)
+	//Convert slice into string representation
+	allTasksString := strings.Join(allTasks, ",")
+	//Calculate hash
+	hashAlg := fnv.New64a()
+	hashAlg.Write([]byte(allTasksString))
+	return hashAlg.Sum64()
 }
 
 //Generate individual by randomizing the taskDB

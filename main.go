@@ -27,17 +27,17 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize         int     = 5000 //size of the population
-	generationsLimit       int     = 10   //how many generations to generate
-	crossoverRate          float32 = 1    //how often to do crossover 0%-100% in decimal
-	mutationRate           float32 = 1    //how often to do mutation 0%-100% in decimal
-	elitismRate            float32 = 0.01 //how many of the best indviduals to keep intact
-	deadend                float32 = 8760 //365 days in hours, fitness for the dead end individual, i.e. impossible to assign workers to all the tasks
-	tourneySampleSize      int     = 20   //sample size for the tournament selection, should be less than population size-number of elites
-	crossoverParentsNumber int     = 2    //number of parents for the crossover
-	maxCrossoverLength     int     = 10   //max number of sequential tasks to cross between individuals
-	maxMutatedGenes        int     = 10   //maximum number of mutated genes, min=2
-	mutationTypePreference float32 = 0    //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
+	populationSize         int     = 100   //size of the population
+	generationsLimit       int     = 100   //how many generations to generate
+	crossoverRate          float32 = 1     //how often to do crossover 0%-100% in decimal
+	mutationRate           float32 = 1     //how often to do mutation 0%-100% in decimal
+	elitismRate            float32 = 0.05  //how many of the best indviduals to keep intact
+	deadend                float32 = 10000 //round number to split between unscheduled tasks and real hours to complete
+	tourneySampleSize      int     = 10    //sample size for the tournament selection, should be less than population size-number of elites
+	crossoverParentsNumber int     = 2     //number of parents for the crossover
+	maxCrossoverLength     int     = 10    //max number of sequential tasks to cross between individuals
+	maxMutatedGenes        int     = 10    //maximum number of mutated genes, min=2
+	mutationTypePreference float32 = 0     //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -49,7 +49,7 @@ const (
 	maxvalueDriving          float32 = 1000
 	maxValueDelay            float32 = 1000
 	maxValueDemand           float32 = 1
-	pinnedDateTimeSnap       float32 = 32
+	pinnedDateTimeSnap       float32 = 16
 	//weightTrades             float32 = 1 //for the trades implementation
 
 )
@@ -989,7 +989,7 @@ func generateIndividualSchedule(chanIndividualIn, chanIndividualOut chan individ
 			}
 		}
 		if unscheduledTasksNumber > 0 {
-			individual.fitness = deadend + unscheduledTasksNumber
+			individual.fitness = unscheduledTasksNumber*deadend + individual.fitness
 		}
 		//logger.Info("Sending individual: ", individual.fitness)
 		chanIndividualOut <- individual

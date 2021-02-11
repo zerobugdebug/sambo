@@ -28,28 +28,28 @@ const (
 
 //Genetic algorithm parameters
 const (
-	populationSize         int     = 1000  //size of the population
-	generationsLimit       int     = 10    //how many generations to generate
-	crossoverRate          float32 = 1     //how often to do crossover 0%-100% in decimal
-	mutationRate           float32 = 1     //how often to do mutation 0%-100% in decimal
-	elitismRate            float32 = 0.001 //how many of the best indviduals to keep intact
+	populationSize         int     = 500   //size of the population
+	generationsLimit       int     = 1000  //how many generations to generate
+	crossoverRate          float32 = 0.9   //how often to do crossover 0%-100% in decimal
+	mutationRate           float32 = 0.9   //how often to do mutation 0%-100% in decimal
+	elitismRate            float32 = 0.01  //how many of the best indviduals to keep intact
 	deadend                float32 = 10000 //round number to split between unscheduled tasks and real hours to complete
-	tourneySampleSize      int     = 50    //sample size for the tournament selection, should be less than population size-number of elites
+	tourneySampleSize      int     = 20    //sample size for the tournament selection, should be less than population size-number of elites
 	crossoverParentsNumber int     = 2     //number of parents for the crossover
-	maxCrossoverLength     int     = 50    //max number of sequential tasks to cross between individuals
+	maxCrossoverLength     int     = 100   //max number of sequential tasks to cross between individuals
 	maxMutatedGenes        int     = 50    //maximum number of mutated genes, min=2
-	mutationTypePreference float32 = 1     //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
+	mutationTypePreference float32 = 0.8   //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
 //Worker best fit, weighted decision matrix (AHP)
 const (
 	weightDistance           float32 = 1
 	weightDelay              float32 = 1
-	weightProjectFamiliarity float32 = 0.01
-	weightDemand             float32 = 1
-	maxvalueDriving          float32 = 1000
-	maxValueDelay            float32 = 1000
-	maxValueDemand           float32 = 1
+	weightProjectFamiliarity float32 = 0.1
+	weightDemand             float32 = 0.5
+	maxValueDriving          float32 = 4  //max driving time in hours
+	maxValueDelay            float32 = 10 //~6 minutes delay
+	maxValueDemand           float32 = 1  //worker can be assigned to all tasks
 	pinnedDateTimeSnap       float32 = 32
 	//weightTrades             float32 = 1 //for the trades implementation
 
@@ -93,9 +93,13 @@ type project struct {
 }
 
 type individual struct {
-	tasks   []scheduledTask
-	workers []scheduledWorker
-	fitness float32
+	tasks       []scheduledTask
+	workers     []scheduledWorker
+	fitness     float32
+	fitnessData struct {
+		unscheduledTasks int
+		finishDateTime   time.Time
+	}
 }
 
 type population struct {
@@ -489,7 +493,7 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 		//valueDelay := v.canStartIn.Sub
 		var valueDelay float32
 		if v.canStartIn.Equal(scheduleStartTime) {
-			valueDelay = float32(math.MaxFloat32)
+			valueDelay = maxValueDelay
 		} else {
 			valueDelay = float32(1 / v.canStartIn.Sub(scheduleStartTime).Hours())
 		}
@@ -502,7 +506,7 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 		//logger.Debug(v.latitude, v.longitude, projectsDB[tasksDB[task.taskID].project].latitude, projectsDB[tasksDB[task.taskID].project].longitude)
 
 		if valueDriving == 0 {
-			valueDriving = float32(math.MaxFloat32)
+			valueDriving = maxValueDriving
 		} else {
 			valueDriving = 1 / valueDriving
 		}
@@ -526,20 +530,20 @@ func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 			   			}
 			   		}
 		*/
-		workers[i].valueDriving = valueDriving
-		workers[i].valueProjectFamiliarity = valueProjectFamiliarity
-		workers[i].valueDemand = valueDemand
 		workers[i].valueDelay = valueDelay
+		workers[i].valueProjectFamiliarity = valueProjectFamiliarity
+		workers[i].valueDriving = valueDriving
+		workers[i].valueDemand = valueDemand
 		//v.valueTrades = valueTrades //TRADES IMPLEMENTATION
 
 		if _, ok := tasksDB[task.taskID].pinnedWorkerIDs[v.workerID]; ok {
 			workers[i].fitness = float32(math.MaxFloat32)
 		}
-		//logger.Debug("Values=", workers[i].workerID, valueDelay, valueProjectFamiliarity, valueDriving, valueDemand)
+		logger.Debug("Values=", workers[i].workerID, valueDelay, valueProjectFamiliarity, valueDriving, valueDemand)
 		//Calculate AHP fitness for the worker, higher number => better fit
 		workers[i].fitness = valueDelay*weightDelay + valueProjectFamiliarity*weightProjectFamiliarity + valueDriving*weightDistance + valueDemand*weightDemand
-		//logger.Debug("Normalized=", workers[i].workerID, valueDelay*weightDelay, valueProjectFamiliarity*weightProjectFamiliarity, valueDriving*weightDistance, valueDemand*weightDemand, workers[i].fitness)
-		//logger.Debugf("%v=%v", v.workerID, workers[i].fitness)
+		logger.Debug("Normalized=", workers[i].workerID, valueDelay*weightDelay, valueProjectFamiliarity*weightProjectFamiliarity, valueDriving*weightDistance, valueDemand*weightDemand, workers[i].fitness)
+		logger.Debugf("%v=%v", v.workerID, workers[i].fitness)
 		// + valueTrades*weightTrades //TRADES IMPLEMENTATION
 	}
 
@@ -556,6 +560,11 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 
 	//Scan through the workers slice to find the first available worker
 	for i, worker := range workers {
+		//Skip the all other workers if pinnedWorker is not empty
+		_, ok := tasksDB[task.taskID].pinnedWorkerIDs[worker.workerID]
+		if len(tasksDB[task.taskID].pinnedWorkerIDs) > 0 && !ok {
+			continue
+		}
 		//Assign only if worker can be assigned to this task
 		//Check if workerID exists in the validWorkers map in taskDB
 		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
@@ -595,7 +604,7 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 				task.assignees = append(task.assignees, worker.workerID)
 
 				//logger.Debug(task)
-				newStopTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(newStartTime, tasksDB[task.taskID].duration)
+				newStopTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(task.startTime, tasksDB[task.taskID].duration)
 				//Extend stop time if current worker can't finish in time
 				if task.stopTime.Before(newStopTime) {
 					task.stopTime = newStopTime
@@ -748,7 +757,7 @@ func transmogrifyPopulation(pop population) population {
 		tempIndividuals = tourneySelect(pop.individuals, crossoverParentsNumber)
 		logger.Debug("tempPopulation size after tourney =", len(tempIndividuals))
 		//Apply crossover to the tempPopulation
-		tempIndividuals = crossoverIndividuals(tempIndividuals)
+		tempIndividuals = crossoverIndividualsOX1(tempIndividuals)
 		logger.Debug("tempPopulation size after crossover =", len(tempIndividuals))
 		//Apply mutation to the tempPopulation
 		tempIndividuals = mutateIndividuals(tempIndividuals)
@@ -825,7 +834,7 @@ func tourneySelect(population []individual, number int) []individual {
 
 func displacementMutation(individual individual) individual {
 	//Randomly select number of genes to mutate, but at least 1
-	numOfGenesToMutate := rand.Intn(maxMutatedGenes-1) + 1
+	numOfGenesToMutate := rand.Intn(maxMutatedGenes) + 1
 	for i := 0; i < numOfGenesToMutate; i++ {
 		//Generate random old position for the gene between 0 and one element before last
 		oldPosition := rand.Intn(len(individual.tasks) - 1)
@@ -874,6 +883,61 @@ func mutateIndividuals(individuals []individual) []individual {
 		}
 	}
 	return mutatedIndividuals
+}
+
+//Crossover indviduals by Order 1 method (OX1)
+func crossoverIndividualsOX1(parentIndividuals []individual) []individual {
+	//var childIndividuals []individual
+	//var crossoverStart, crossoverEnd, crossoverLen int
+	//Copy parent to child individuals slice
+	childIndividuals := copyIndividuals(parentIndividuals)
+	sizeIndividualTasks := len(childIndividuals[0].tasks)
+	//Check if we need to crossover
+
+	if rand.Float32() < crossoverRate {
+		crossoverStart := rand.Intn(sizeIndividualTasks)
+		crossoverLen := rand.Intn(maxCrossoverLength)
+		crossoverEnd := crossoverStart + crossoverLen
+		if crossoverEnd > sizeIndividualTasks {
+			crossoverEnd = sizeIndividualTasks
+		}
+		logger.Debug("crossoverStart=", crossoverStart)
+		logger.Debug("crossoverLen=", crossoverLen)
+		logger.Debug("crossoverEnd=", crossoverEnd)
+		//TODO: Add random selection of the swappable individuals
+		for i, parent := range parentIndividuals {
+			logger.Debug("parent=", parent)
+			logger.Debug("i=", i)
+			//Map to store copied genes
+			copiedGenes := make(map[string]struct{})
+			//Copy selected number of genes from first parent to child
+			for j := crossoverStart; j < crossoverEnd; j++ {
+				logger.Debug("TaskID=", parent.tasks[j].taskID)
+				childIndividuals[i].tasks[j].taskID = parent.tasks[j].taskID
+				copiedGenes[parent.tasks[j].taskID] = struct{}{}
+			}
+
+			childIndex := 0
+			parentIndex := 0
+
+			//Loop across the last parent and copy non-repeating genes (tasks)
+			for childIndex < sizeIndividualTasks && parentIndex < sizeIndividualTasks {
+				parentTask := parentIndividuals[len(parentIndividuals)-i-1].tasks[parentIndex]
+				logger.Debugf("childIndex=%v, parentIndex=%v", childIndex, parentIndex)
+				if childIndex >= crossoverStart && childIndex < crossoverEnd {
+					childIndex++
+					continue
+				}
+				if _, ok := copiedGenes[parentTask.taskID]; !ok {
+					childIndividuals[i].tasks[childIndex].taskID = parentTask.taskID
+					childIndex++
+				}
+				parentIndex++
+
+			}
+		}
+	}
+	return childIndividuals
 }
 
 func crossoverIndividuals(parentIndividuals []individual) []individual {
@@ -1137,6 +1201,31 @@ func prettyPrintTask(task scheduledTask) {
 
 func main() {
 
+	logger.Info("================================================")
+	logger.Info("Current GA settings:")
+	logger.Info("populationSize=", populationSize)
+	logger.Info("generationsLimit=", generationsLimit)
+	logger.Info("crossoverRate=", crossoverRate)
+	logger.Info("mutationRate=", mutationRate)
+	logger.Info("elitismRate=", elitismRate)
+	logger.Info("deadend=", deadend)
+	logger.Info("tourneySampleSize=", tourneySampleSize)
+	logger.Info("crossoverParentsNumber=", crossoverParentsNumber)
+	logger.Info("maxCrossoverLength=", maxCrossoverLength)
+	logger.Info("maxMutatedGenes=", maxMutatedGenes)
+	logger.Info("mutationTypePreference=", mutationTypePreference)
+	logger.Info("================================================")
+	logger.Info("Current workers AHP settings:")
+	logger.Info("weightDistance=", weightDistance)
+	logger.Info("weightDelay=", weightDelay)
+	logger.Info("weightProjectFamiliarity=", weightProjectFamiliarity)
+	logger.Info("weightDemand=", weightDemand)
+	logger.Info("maxValueDriving=", maxValueDriving)
+	logger.Info("maxValueDelay=", maxValueDelay)
+	logger.Info("maxValueDemand=", maxValueDemand)
+	logger.Info("pinnedDateTimeSnap=", pinnedDateTimeSnap)
+	logger.Info("================================================")
+
 	var population population
 	rand.Seed(time.Now().UnixNano())
 
@@ -1163,6 +1252,8 @@ func main() {
 	//fmt.Println(projectFamiliarityDB)
 	population = generatePopulation()
 
+	var stableGenerationsNumber int
+	var stableGenerationsFitness float32
 	for i := 0; i < generationsLimit; i++ {
 		logger.Info("Generation", i)
 		//Mutate and crossover population
@@ -1178,6 +1269,16 @@ func main() {
 		logger.Info("Best fitness =", population.individuals[0].fitness)
 		logger.Info("Second best fitness =", population.individuals[1].fitness)
 		logger.Info("Third best fitness =", population.individuals[2].fitness)
+
+		logger.Info("Stagnant generations number =", stableGenerationsNumber)
+		//Update number of stagnant generations
+		if population.individuals[0].fitness+population.individuals[1].fitness+population.individuals[2].fitness != stableGenerationsFitness {
+			stableGenerationsFitness = population.individuals[0].fitness + population.individuals[1].fitness + population.individuals[2].fitness
+			stableGenerationsNumber = 0
+		} else {
+			stableGenerationsNumber++
+		}
+
 	}
 	logger.Info("Best schedule")
 	for _, task := range population.individuals[0].tasks {

@@ -25,7 +25,7 @@ func calcDistance(latitude1, longitude1, latitude2, longitude2 float64) float32 
 	return float32(distance)
 }
 
-//CalcDrivingTime will calculate average driving time between 2 locations
+//CalcDrivingTime will calculate average driving time between 2 locations in hours
 func CalcDrivingTime(latitude1, longitude1, latitude2, longitude2 float64) float32 {
 	//TODO: Replace with GMaps API
 	return calcDistance(latitude1, longitude1, latitude2, longitude2) / drivingSpeed

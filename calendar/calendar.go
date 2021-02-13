@@ -73,12 +73,12 @@ func (site Site) AddHours(startTime time.Time, hours float32) time.Time {
 	//Count required number of working days, skipping weekends and hoildays
 	var workingDays int = 0
 	for workingDays < totalDays {
-		endTime = endTime.AddDate(0, 0, 1)
 		if endTime.Weekday() == time.Saturday {
 			endTime = endTime.AddDate(0, 0, 2)
 		} else if _, ok := site.Holidays[endTime]; ok {
 			endTime = endTime.AddDate(0, 0, 1)
 		} else {
+			endTime = endTime.AddDate(0, 0, 1)
 			workingDays++
 		}
 	}

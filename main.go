@@ -27,18 +27,18 @@ const (
 )
 
 //Genetic algorithm parameters
-const (
-	populationSize         int     = 500   //size of the population
-	generationsLimit       int     = 1000  //how many generations to generate
+var (
+	populationSize         int     = 5     //size of the population
+	generationsLimit       int     = 1     //how many generations to generate
 	crossoverRate          float32 = 0.9   //how often to do crossover 0%-100% in decimal
 	mutationRate           float32 = 0.9   //how often to do mutation 0%-100% in decimal
-	elitismRate            float32 = 0.01  //how many of the best indviduals to keep intact
+	elitismRate            float32 = 0.2   //how many of the best indviduals to keep intact
 	deadend                float32 = 10000 //round number to split between unscheduled tasks and real hours to complete
-	tourneySampleSize      int     = 20    //sample size for the tournament selection, should be less than population size-number of elites
+	tourneySampleSize      int     = 3     //sample size for the tournament selection, should be less than population size-number of elites
 	crossoverParentsNumber int     = 2     //number of parents for the crossover
-	maxCrossoverLength     int     = 100   //max number of sequential tasks to cross between individuals
-	maxMutatedGenes        int     = 50    //maximum number of mutated genes, min=2
-	mutationTypePreference float32 = 0.8   //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
+	maxCrossoverLength     int     = 3     //max number of sequential tasks to cross between individuals
+	maxMutatedGenes        int     = 3     //maximum number of mutated genes, min=2
+	mutationTypePreference float32 = 0.5   //prefered mutation type rate. 0 = 100% swap mutation, 1 = 100% displacement mutation
 )
 
 //Worker best fit, weighted decision matrix (AHP)
@@ -50,7 +50,7 @@ const (
 	maxValueDriving          float32 = 4  //max driving time in hours
 	maxValueDelay            float32 = 10 //~6 minutes delay
 	maxValueDemand           float32 = 1  //worker can be assigned to all tasks
-	pinnedDateTimeSnap       float32 = 32
+	pinnedDateTimeSnap       float32 = 8
 	//weightTrades             float32 = 1 //for the trades implementation
 
 )
@@ -63,11 +63,17 @@ const (
 	threadsNum            int    = 256                //number of go routines to run simultaneously
 )
 
+type dateTimeRange struct {
+	startTime time.Time
+	endTime   time.Time
+}
+
 type worker struct {
-	name      string
-	latitude  float64
-	longitude float64
-	demand    float32 //how many tasks could be assigned to worker
+	name          string
+	latitude      float64
+	longitude     float64
+	demand        float32 //how many tasks could be assigned to worker
+	blockedRanges []dateTimeRange
 }
 
 type scheduledWorker struct {
@@ -277,6 +283,10 @@ func verifyTaskDB() {
 		}
 	}
 
+	//TODO: Verify that predecessors are not circular
+	//TODO: Verify that predecessors and successors are not pinned to the same DateTime
+	//TODO: Verify that pinned worker is part of valid workers (?)
+
 	//Verify double pinning
 	for firstKey, firstTask := range tasksDB {
 		//Both time and worker pinned
@@ -344,6 +354,47 @@ func readWorkerInfoCSV() map[string]worker {
 
 }
 
+func readWorkerTimeOffCSV(workers map[string]worker) map[string]worker {
+	var tempWorker worker
+	var blockedRange dateTimeRange
+	var hours float64
+	workersTimeOffDBFile, err := os.Open(workersTimeOffDBFileName)
+	if err != nil {
+		logger.Fatal("Couldn't open the "+workersTimeOffDBFileName+" file\r\n", err)
+	}
+	workersTimeOffData := csv.NewReader(workersTimeOffDBFile)
+	_, err = workersTimeOffData.Read() //skip CSV header
+	for {
+		workersTimeOffRecord, err := workersTimeOffData.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			logger.Fatal(err)
+		}
+		//workerTemp=workers[workersTimeOffRecord[2]]
+		//workerTemp.name = workersTimeOffRecord[0]
+		blockedRange.startTime, err = time.ParseInLocation(defaultDateTimeFormat, workersTimeOffRecord[0], scheduleStartTime.Location())
+		if err != nil {
+			logger.Error("Original record: ", workersTimeOffRecord)
+			logger.Fatal("Couldn't parse datetime start value", err)
+		}
+
+		hours, err = strconv.ParseFloat(workersTimeOffRecord[1], 32)
+		if err != nil {
+			logger.Error("Original record: ", workersTimeOffRecord)
+			logger.Fatal("Couldn't parse hours value", err)
+		}
+		blockedRange.endTime = blockedRange.startTime.Add(time.Duration(hours) * time.Hour)
+		tempWorker = workers[workersTimeOffRecord[2]]
+		tempWorker.blockedRanges = append(tempWorker.blockedRanges, blockedRange)
+		logger.Infof("WorkerID=%v, startTime=%v, endTime=%v", workersTimeOffRecord[2], blockedRange.startTime, blockedRange.endTime)
+		workers[workersTimeOffRecord[2]] = tempWorker
+
+	}
+	return workersDB
+}
+
 func readWorkerProjectHoursCSV() map[string]map[string]float32 {
 	projectFamiliarityDB := make(map[string]map[string]float32)
 	projectFamiliarityDBFile, err := os.Open(projectFamiliarityDBFileName)
@@ -372,8 +423,6 @@ func readWorkerProjectHoursCSV() map[string]map[string]float32 {
 	}
 	return projectFamiliarityDB
 }
-
-func readWorkerTimeOffCSV() {}
 
 func calculateWorkersDemand() map[string]worker {
 	var workerTemp worker
@@ -1240,7 +1289,7 @@ func main() {
 	tasksDB = readTaskInfoCSV()
 	workersDB = readWorkerInfoCSV()
 	projectFamiliarityDB = readWorkerProjectHoursCSV()
-	readWorkerTimeOffCSV()
+	workersDB = readWorkerTimeOffCSV(workersDB)
 
 	verifyTaskDB()
 
@@ -1252,8 +1301,8 @@ func main() {
 	//fmt.Println(projectFamiliarityDB)
 	population = generatePopulation()
 
-	var stableGenerationsNumber int
-	var stableGenerationsFitness float32
+	var stagnantGenerationsNumber int
+	var stagnantGenerationsFitness float32
 	for i := 0; i < generationsLimit; i++ {
 		logger.Info("Generation", i)
 		//Mutate and crossover population
@@ -1270,13 +1319,36 @@ func main() {
 		logger.Info("Second best fitness =", population.individuals[1].fitness)
 		logger.Info("Third best fitness =", population.individuals[2].fitness)
 
-		logger.Info("Stagnant generations number =", stableGenerationsNumber)
+		logger.Info("Stagnant generations number =", stagnantGenerationsNumber)
 		//Update number of stagnant generations
-		if population.individuals[0].fitness+population.individuals[1].fitness+population.individuals[2].fitness != stableGenerationsFitness {
-			stableGenerationsFitness = population.individuals[0].fitness + population.individuals[1].fitness + population.individuals[2].fitness
-			stableGenerationsNumber = 0
+		if population.individuals[0].fitness+population.individuals[1].fitness+population.individuals[2].fitness != stagnantGenerationsFitness {
+			stagnantGenerationsFitness = population.individuals[0].fitness + population.individuals[1].fitness + population.individuals[2].fitness
+			stagnantGenerationsNumber = 0
 		} else {
-			stableGenerationsNumber++
+			stagnantGenerationsNumber++
+		}
+		//Add randomness to break the stagnation
+		if stagnantGenerationsNumber > 50 {
+			tourneySampleSize = rand.Intn(91) + 10
+			crossoverParentsNumber = rand.Intn(3) + 2
+			maxCrossoverLength = rand.Intn(91) + 10
+			maxMutatedGenes = rand.Intn(91) + 10
+			mutationTypePreference = rand.Float32()
+			stagnantGenerationsNumber = 0
+			logger.Info("================================================")
+			logger.Info("Current GA settings:")
+			logger.Info("populationSize=", populationSize)
+			logger.Info("generationsLimit=", generationsLimit)
+			logger.Info("crossoverRate=", crossoverRate)
+			logger.Info("mutationRate=", mutationRate)
+			logger.Info("elitismRate=", elitismRate)
+			logger.Info("deadend=", deadend)
+			logger.Info("tourneySampleSize=", tourneySampleSize)
+			logger.Info("crossoverParentsNumber=", crossoverParentsNumber)
+			logger.Info("maxCrossoverLength=", maxCrossoverLength)
+			logger.Info("maxMutatedGenes=", maxMutatedGenes)
+			logger.Info("mutationTypePreference=", mutationTypePreference)
+			logger.Info("================================================")
 		}
 
 	}

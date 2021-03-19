@@ -72,21 +72,23 @@ type worker struct {
 	name          string
 	latitude      float64
 	longitude     float64
-	demand        float32 //how many tasks could be assigned to worker
+	demand        float32 //how many tasks could potentialy be assigned to worker
 	blockedRanges []dateTimeRange
 }
 
 type scheduledWorker struct {
 	workerID                string
-	canStartIn              time.Time
+	availableAt             time.Time //earliest available time for the new task
+	canStartTaskAt          time.Time //earliest time to start specific task, depends on duration, block time, etc
+	blockedRanges           []dateTimeRange
 	latitude                float64
 	longitude               float64
 	fitness                 float32
 	valueDelay              float32
 	valueDriving            float32
 	valueProjectFamiliarity float32
+	valueDemand             float32
 	// valueTrades             float32
-	valueDemand float32
 }
 
 type project struct {
@@ -372,8 +374,7 @@ func readWorkerTimeOffCSV(workers map[string]worker) map[string]worker {
 		if err != nil {
 			logger.Fatal(err)
 		}
-		//workerTemp=workers[workersTimeOffRecord[2]]
-		//workerTemp.name = workersTimeOffRecord[0]
+
 		blockedRange.startTime, err = time.ParseInLocation(defaultDateTimeFormat, workersTimeOffRecord[0], scheduleStartTime.Location())
 		if err != nil {
 			logger.Error("Original record: ", workersTimeOffRecord)
@@ -386,9 +387,10 @@ func readWorkerTimeOffCSV(workers map[string]worker) map[string]worker {
 			logger.Fatal("Couldn't parse hours value", err)
 		}
 		blockedRange.endTime = blockedRange.startTime.Add(time.Duration(hours) * time.Hour)
+
 		tempWorker = workers[workersTimeOffRecord[2]]
 		tempWorker.blockedRanges = append(tempWorker.blockedRanges, blockedRange)
-		logger.Infof("WorkerID=%v, startTime=%v, endTime=%v", workersTimeOffRecord[2], blockedRange.startTime, blockedRange.endTime)
+		logger.Debugf("WorkerID=%v, startTime=%v, endTime=%v", workersTimeOffRecord[2], blockedRange.startTime, blockedRange.endTime)
 		workers[workersTimeOffRecord[2]] = tempWorker
 
 	}
@@ -490,7 +492,7 @@ func generateIndividual() individual {
 	newIndividual.workers = make([]scheduledWorker, len(workersDB))
 	for k, v := range workersDB {
 		newIndividual.workers[i].workerID = k
-		newIndividual.workers[i].canStartIn = scheduleStartTime
+		newIndividual.workers[i].availableAt = scheduleStartTime
 		newIndividual.workers[i].latitude = v.latitude
 		newIndividual.workers[i].longitude = v.longitude
 		newIndividual.workers[i].fitness = 0
@@ -514,7 +516,7 @@ func resetIndividual(individual individual) individual {
 	}
 
 	for i, v := range individual.workers {
-		individual.workers[i].canStartIn = scheduleStartTime
+		individual.workers[i].availableAt = scheduleStartTime
 		individual.workers[i].latitude = workersDB[v.workerID].latitude
 		individual.workers[i].longitude = workersDB[v.workerID].longitude
 		individual.workers[i].fitness = 0
@@ -538,13 +540,16 @@ func generatePopulation() population {
 func calculateWorkersFitness(task scheduledTask, workers []scheduledWorker) {
 	for i, v := range workers {
 
+		//Caclulate earliest time to do the specific task for the current worker
+		//for
+
 		//Smaller wait time => higher number => better fit
-		//valueDelay := v.canStartIn.Sub
+		//valueDelay := v.availableAt.Sub
 		var valueDelay float32
-		if v.canStartIn.Equal(scheduleStartTime) {
+		if v.availableAt.Equal(scheduleStartTime) {
 			valueDelay = maxValueDelay
 		} else {
-			valueDelay = float32(1 / v.canStartIn.Sub(scheduleStartTime).Hours())
+			valueDelay = float32(1 / v.availableAt.Sub(scheduleStartTime).Hours())
 		}
 
 		//More hours in project => higher number => better fit
@@ -618,12 +623,12 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 		//Check if workerID exists in the validWorkers map in taskDB
 		if _, ok := tasksDB[task.taskID].validWorkers[worker.workerID]; ok {
 			//Worker is a valid worker and can be potentially assigned
-			logger.Debugf("Can be assigned, task:%v, worker:%v, start:%v", task.taskID, worker.workerID, worker.canStartIn)
+			logger.Debugf("Can be assigned, task:%v, worker:%v, start:%v", task.taskID, worker.workerID, worker.availableAt)
 
 			//TODO: Ignore first driving time from home
 
 			//Earliest possible task start time
-			newStartTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(worker.canStartIn, float32(math.Round(100/float64(worker.valueDriving))/100))
+			newStartTime := projectsDB[tasksDB[task.taskID].project].site.AddHours(worker.availableAt, float32(math.Round(100/float64(worker.valueDriving))/100))
 			//Snapping range for the startTime
 			newStartTimeWithSnap := projectsDB[tasksDB[task.taskID].project].site.AddHours(newStartTime, pinnedDateTimeSnap)
 			newPinnedTimeWithSnap := projectsDB[tasksDB[task.taskID].project].site.AddHours(tasksDB[task.taskID].pinnedDateTime, pinnedDateTimeSnap)
@@ -660,7 +665,7 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 				}
 				//logger.Debug(task)
 				//Change worker's next start time
-				workers[i].canStartIn = task.stopTime
+				workers[i].availableAt = task.stopTime
 
 				//Change worker's location
 				workers[i].latitude = projectsDB[tasksDB[task.taskID].project].latitude
@@ -686,7 +691,7 @@ func calculateWorkersFitness(task scheduledTask, trade string, workers []schedul
 	for _, v := range workers {
 
 		//Smaller wait time => higher number => better fit
-		valueDelay := v.canStartIn
+		valueDelay := v.availableAt
 		if valueDelay == 0 {
 			valueDelay = maxValueDelay
 		} else {
@@ -740,14 +745,14 @@ func assignBestWorker(task scheduledTask, workers []scheduledWorker) (scheduledT
 		if v.valueTrades != 0 {
 			task.assignees = append(task.assignees, workers[i].workerID)
 			//TODO: Replace with proper calculation and GMaps API
-			task.startTime = workers[0].canStartIn + drivingSpeed/workers[i].valueDriving
+			task.startTime = workers[0].availableAt + drivingSpeed/workers[i].valueDriving
 
 			//Keep stop time intact for the multiple trades with different availability
 			if task.stopTime-task.startTime < tasksDB[task.taskID].duration {
 				task.stopTime = task.startTime + tasksDB[task.taskID].duration
 			}
 			//Change worker's next start time
-			workers[i].canStartIn = task.startTime + tasksDB[task.taskID].duration
+			workers[i].availableAt = task.startTime + tasksDB[task.taskID].duration
 
 			//Change worker's location
 			workers[i].latitude = projectsDB[task.taskID].latitude
